@@ -1,0 +1,156 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isSuperAdmin() {
+      return isAuth() &&
+        getUserData().role == 'super_admin' &&
+        getUserData().is_active == true;
+    }
+
+    function isAdmin() {
+      return isAuth() &&
+        getUserData().role == 'admin' &&
+        getUserData().is_active == true;
+    }
+
+    function isAdminOrSuperAdmin() {
+      return isSuperAdmin() || isAdmin();
+    }
+
+    // Checks if the authenticated user owns the client doc (uid field matches auth uid)
+    function isOwnerClient(clientId) {
+      return isAuth() &&
+        get(/databases/$(database)/documents/clients/$(clientId)).data.uid == request.auth.uid;
+    }
+
+    // Checks if auth user is the client who owns a reservation/report/review
+    // client_id in those docs = Firestore doc ID of the client, not Firebase Auth UID
+    function isClientOwnerOf(clientDocId) {
+      return isAuth() &&
+        get(/databases/$(database)/documents/clients/$(clientDocId)).data.uid == request.auth.uid;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuth() && request.auth.uid == userId;
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // Settings — super admin write, admins read
+    match /settings/{docId} {
+      allow read: if isAdminOrSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    // Services — public read, super admin write
+    match /services/{serviceId} {
+      allow read: if true;
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // Contact requests — public write (unauthenticated booking form), admin read
+    match /contact_requests/{docId} {
+      allow create: if true;
+      allow read: if isAdminOrSuperAdmin();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Clients collection
+    match /clients/{clientId} {
+      allow read: if isAdminOrSuperAdmin() ||
+        (isAuth() && resource.data.uid == request.auth.uid) ||
+        (isAuth() && resource.data.phone == request.auth.token.phone_number);
+      // Allow uid linking on first phone login (only uid field can be changed by client)
+      allow update: if isAdminOrSuperAdmin() ||
+        (isAuth() &&
+         resource.data.uid == null &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid']) &&
+         request.resource.data.uid == request.auth.uid) ||
+        // Client updating their own doc (uid as document ID)
+        (isAuth() && clientId == request.auth.uid);
+      allow create: if isAdminOrSuperAdmin() ||
+        (isAuth() &&
+         request.resource.data.uid == request.auth.uid &&
+         request.resource.data.phone == request.auth.token.phone_number) ||
+        // Client saving their own doc using uid as document ID
+        (isAuth() && clientId == request.auth.uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // Reservations collection
+    match /reservations/{reservationId} {
+      allow read: if isSuperAdmin() ||
+        (isAdmin() && resource.data.admin_id == request.auth.uid) ||
+        (isAdmin() && resource.data.admin_id == null) ||
+        isClientOwnerOf(resource.data.client_id) ||
+        // Any authenticated user can read date/time fields to check availability
+        isAuth();
+
+      allow create: if
+        // Admin creates confirmed booking for a client
+        (isAdmin() && request.resource.data.admin_id == request.auth.uid) ||
+        // Client creates pending booking (client_id must be their own doc)
+        (isAuth() &&
+         request.resource.data.booked_by == 'client' &&
+         request.resource.data.status == 'pending' &&
+         request.resource.data.admin_id == null &&
+         isClientOwnerOf(request.resource.data.client_id));
+
+      allow update: if isSuperAdmin() ||
+        (isAdmin() && (resource.data.admin_id == request.auth.uid || resource.data.admin_id == null)) ||
+        // Client can mark reservation as reviewed
+        (isClientOwnerOf(resource.data.client_id) &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewed']));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // Timetable — clients can read to see available slots
+    match /timetable/{slotId} {
+      allow read: if isAuth();
+      allow create: if isAdmin() && request.resource.data.admin_id == request.auth.uid;
+      allow update: if isSuperAdmin() ||
+        (isAdmin() && resource.data.admin_id == request.auth.uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // Session reports
+    match /session_reports/{reportId} {
+      allow read: if isSuperAdmin() ||
+        (isAdmin() && resource.data.admin_id == request.auth.uid) ||
+        isClientOwnerOf(resource.data.client_id);
+      allow create: if isSuperAdmin() ||
+        (isAdmin() && request.resource.data.admin_id == request.auth.uid);
+      allow update: if isSuperAdmin() ||
+        (isAdmin() && resource.data.admin_id == request.auth.uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // Reviews
+    match /reviews/{reviewId} {
+      allow read: if isAdminOrSuperAdmin() ||
+        isClientOwnerOf(resource.data.client_id);
+      allow create: if isAdminOrSuperAdmin() ||
+        (isAuth() && isClientOwnerOf(request.resource.data.client_id));
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Notifications
+    match /notifications/{notifId} {
+      allow read: if isAdminOrSuperAdmin();
+      allow create: if isAdminOrSuperAdmin();
+      allow update, delete: if isSuperAdmin();
+    }
+  }
+}
