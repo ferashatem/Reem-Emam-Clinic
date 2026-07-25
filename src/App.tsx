@@ -5,6 +5,7 @@ import { LangProvider } from './context/LangContext'
 import ProtectedRoute from './components/layout/ProtectedRoute'
 import SuperAdminLayout from './components/layout/SuperAdminLayout'
 import AdminLayout from './components/layout/AdminLayout'
+import StaffLayout from './components/layout/StaffLayout'
 import ClientLayout from './components/layout/ClientLayout'
 
 // Public pages
@@ -32,6 +33,11 @@ import AdminReservations from './pages/admin/Reservations'
 import Timetable from './pages/admin/Timetable'
 import SessionReports from './pages/admin/SessionReports'
 import WhatsApp from './pages/admin/WhatsApp'
+
+// Staff pages
+import StaffReservations from './pages/staff/Reservations'
+import StaffClients from './pages/staff/Clients'
+import StaffCollections from './pages/staff/Collections'
 
 // Client pages
 import ClientOnboarding from './pages/client/Onboarding'
@@ -122,6 +128,21 @@ export default function App() {
               <Route path="timetable" element={<Timetable />} />
               <Route path="session-reports" element={<SessionReports />} />
               <Route path="whatsapp" element={<WhatsApp />} />
+            </Route>
+
+            {/* Staff */}
+            <Route
+              path="/staff"
+              element={
+                <ProtectedRoute role="staff">
+                  <StaffLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<Navigate to="reservations" replace />} />
+              <Route path="reservations" element={<StaffReservations />} />
+              <Route path="clients" element={<StaffClients />} />
+              <Route path="collections" element={<StaffCollections />} />
             </Route>
 
             {/* Fallback */}

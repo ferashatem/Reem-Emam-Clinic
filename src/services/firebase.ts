@@ -3,7 +3,7 @@ import { getAuth } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: "AIzaSyCnjxQyuMAWdUxO_A9M-fxJmn1u2HBmgG8",
   authDomain: "reem-emam.firebaseapp.com",
   projectId: "reem-emam",

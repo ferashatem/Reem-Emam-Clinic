@@ -22,8 +22,19 @@ service cloud.firestore {
         getUserData().is_active == true;
     }
 
+    function isStaff() {
+      return isAuth() &&
+        getUserData().role == 'staff' &&
+        getUserData().is_active == true;
+    }
+
     function isAdminOrSuperAdmin() {
       return isSuperAdmin() || isAdmin();
+    }
+
+    // Any active internal team member (super_admin, admin, or staff)
+    function isTeam() {
+      return isSuperAdmin() || isAdmin() || isStaff();
     }
 
     // Checks if the authenticated user owns the client doc (uid field matches auth uid)
@@ -67,7 +78,8 @@ service cloud.firestore {
 
     // Clients collection
     match /clients/{clientId} {
-      allow read: if isAdminOrSuperAdmin() ||
+      // Staff (reception) have read-only access to client data
+      allow read: if isTeam() ||
         (isAuth() && resource.data.uid == request.auth.uid) ||
         (isAuth() && resource.data.phone == request.auth.token.phone_number);
       // Allow uid linking on first phone login (only uid field can be changed by client)
@@ -99,6 +111,8 @@ service cloud.firestore {
       allow create: if
         // Admin creates confirmed booking for a client
         (isAdmin() && request.resource.data.admin_id == request.auth.uid) ||
+        // Staff (reception) creates a booking they own
+        (isStaff() && request.resource.data.admin_id == request.auth.uid) ||
         // Client creates pending booking (client_id must be their own doc)
         (isAuth() &&
          request.resource.data.booked_by == 'client' &&
@@ -108,6 +122,8 @@ service cloud.firestore {
 
       allow update: if isSuperAdmin() ||
         (isAdmin() && (resource.data.admin_id == request.auth.uid || resource.data.admin_id == null)) ||
+        // Staff can edit bookings and confirm client requests
+        isStaff() ||
         // Client can mark reservation as reviewed
         (isClientOwnerOf(resource.data.client_id) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewed']));
@@ -143,6 +159,16 @@ service cloud.firestore {
       allow create: if isAdminOrSuperAdmin() ||
         (isAuth() && isClientOwnerOf(request.resource.data.client_id));
       allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Payments / Collections (تحصيلات) — recorded by staff after sessions
+    match /payments/{paymentId} {
+      allow read: if isTeam();
+      allow create: if isTeam() && request.resource.data.staff_id == request.auth.uid;
+      // Staff can soft-delete their own records; super admin can edit any
+      allow update: if isSuperAdmin() ||
+        (isStaff() && resource.data.staff_id == request.auth.uid);
       allow delete: if isSuperAdmin();
     }
 

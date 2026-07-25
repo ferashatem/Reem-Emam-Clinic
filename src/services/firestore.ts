@@ -32,9 +32,10 @@ export async function linkUidToUser(docId: string, uid: string) {
 }
 
 export async function getAdmins() {
+  // Returns both admins and staff (the internal team)
   const q = query(
     collection(db, 'users'),
-    where('role', '==', 'admin'),
+    where('role', 'in', ['admin', 'staff']),
     where('deleted_at', '==', null)
   )
   const snap = await getDocs(q)
@@ -44,7 +45,7 @@ export async function getAdmins() {
 export async function createAdmin(data: DocumentData) {
   return setDoc(doc(db, 'users', data.uid), {
     ...data,
-    role: 'admin',
+    role: data.role === 'staff' ? 'staff' : 'admin',
     is_active: true,
     created_at: now(),
     deleted_at: null,
@@ -313,6 +314,30 @@ export async function createReview(data: DocumentData) {
 
 export async function updateReview(id: string, data: Partial<DocumentData>) {
   return updateDoc(doc(db, 'reviews', id), data)
+}
+
+// ─── Payments / Collections (تحصيلات) ─────────────────────────────────────────
+
+export async function getPayments(filters?: { staffId?: string; date?: string }) {
+  const snap = await getDocs(collection(db, 'payments'))
+  let results = snap.docs.map(d => ({ id: d.id, ...d.data() })) as DocumentData[]
+  results = results.filter((p: DocumentData) => p.deleted_at === null)
+  results = results.sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
+  if (filters?.staffId) results = results.filter((p: DocumentData) => p.staff_id === filters.staffId)
+  if (filters?.date) results = results.filter((p: DocumentData) => p.date === filters.date)
+  return results
+}
+
+export async function createPayment(data: DocumentData) {
+  return addDoc(collection(db, 'payments'), {
+    ...data,
+    created_at: now(),
+    deleted_at: null,
+  })
+}
+
+export async function softDeletePayment(id: string) {
+  return updateDoc(doc(db, 'payments', id), { deleted_at: now() })
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────

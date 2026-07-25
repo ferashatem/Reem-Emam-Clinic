@@ -2,28 +2,30 @@ import { useLang } from '../context/LangContext'
 
 export default function Testimonials() {
   const { tr } = useLang()
-  const doubled = [...tr.testimonials.items, ...tr.testimonials.items]
+  const t = tr.testimonials
+  const items = t.items.slice(0, 6)
+  const delays = ['', 'd1', 'd2']
 
   return (
-    <section id="testimonials" className="testimonials-section">
-      <div className="container">
-        <p className="section-label fi">{tr.testimonials.label}</p>
-        <h2 className="section-title fi d1">{tr.testimonials.title}</h2>
-        <div className="divider fi d2"><span>✦</span></div>
-      </div>
+    <section id="testimonials" className="section">
+      <div className="wrap">
+        <div className="head">
+          <span className="eyebrow reveal">{t.label}</span>
+          <h2 className="title reveal d1">{t.title} <span className="soft">{t.titleB}</span></h2>
+        </div>
 
-      <div className="marquee-wrap fi d3">
-        <div className="marquee-track">
-          {doubled.map((item, i) => (
-            <div key={i} className="tcard">
-              <div className="t-stars">★★★★★</div>
-              <div className="t-text">{item.text}</div>
-              <div className="t-author">
-                <div className="t-avatar">{item.init}</div>
+        <div className="reviews__grid">
+          {items.map((item, i) => (
+            <div key={i} className={`review reveal ${delays[i % 3]}`}>
+              <div className="review__mark">”</div>
+              <p className="review__text">{item.text}</p>
+              <div className="review__foot">
+                <div className="review__avatar">{item.init}</div>
                 <div>
-                  <div className="t-name">{item.name}</div>
-                  <div className="t-label">{item.label}</div>
+                  <div className="review__name">{item.name}</div>
+                  <div className="review__label">{item.label}</div>
                 </div>
+                <span className="review__rate">★ {item.rating}</span>
               </div>
             </div>
           ))}

@@ -14,7 +14,7 @@ interface AdminProfile {
   name: string
   phone: string
   email: string
-  role: 'super_admin' | 'admin'
+  role: 'super_admin' | 'admin' | 'staff'
   is_active: boolean
   working_hours?: string
 }
@@ -39,7 +39,7 @@ interface AuthContextType {
   userProfile: UserProfile | null
   clientProfile: ClientProfile | null
   loading: boolean
-  role: 'super_admin' | 'admin' | 'client' | null
+  role: 'super_admin' | 'admin' | 'staff' | 'client' | null
 }
 
 const AuthContext = createContext<AuthContextType>({

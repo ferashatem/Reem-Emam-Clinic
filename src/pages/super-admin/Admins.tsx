@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { getAdmins, createAdmin, updateAdmin, softDeleteAdmin } from '../../services/firestore'
+import { createTeamMemberAuth } from '../../services/auth'
 import { useAuth } from '../../context/AuthContext'
 import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
@@ -10,8 +11,16 @@ import { normalizePhone } from '../../utils/validators'
 
 interface AdminForm {
   name: string
+  username: string
+  password: string
   phone: string
   working_hours: string
+  role: 'admin' | 'staff'
+}
+
+const roleLabels: Record<string, string> = {
+  admin: 'أدمن',
+  staff: 'استاف',
 }
 
 export default function Admins() {
@@ -31,35 +40,48 @@ export default function Admins() {
 
   useEffect(() => { load() }, [])
 
-  function openCreate() { setEditTarget(null); reset({}); setModalOpen(true) }
-  function openEdit(admin: any) { setEditTarget(admin); reset(admin); setModalOpen(true) }
+  function openCreate() { setEditTarget(null); reset({ role: 'admin' }); setModalOpen(true) }
+  function openEdit(admin: any) { setEditTarget(admin); reset({ ...admin, role: admin.role ?? 'admin' }); setModalOpen(true) }
 
   async function onSubmit(data: AdminForm) {
     setSaving(true)
     try {
-      const phone = normalizePhone(data.phone)
+      const phone = data.phone ? normalizePhone(data.phone) : ''
+      const role = data.role === 'staff' ? 'staff' : 'admin'
       if (editTarget) {
+        // Username & password are fixed at creation time (tied to the auth account)
         await updateAdmin(editTarget.id, {
           name: data.name,
           phone,
-          working_hours: data.working_hours,
+          working_hours: data.working_hours ?? '',
+          role,
         })
-        toast.success('Admin updated')
+        toast.success('Saved')
       } else {
-        // Create Firestore doc only — UID will be linked on first phone login
+        // 1) Create the Firebase Auth account (username → internal email + password)
+        const username = data.username.trim().toLowerCase()
+        const uid = await createTeamMemberAuth(username, data.password)
+        // 2) Create the Firestore profile doc keyed by the real UID
         await createAdmin({
-          uid: `pending_${Date.now()}`,
+          uid,
+          username,
           name: data.name,
           phone,
-          working_hours: data.working_hours,
+          working_hours: data.working_hours ?? '',
+          role,
           created_by: userProfile?.uid ?? '',
         })
-        toast.success('Admin added — they can log in with their phone number')
+        toast.success('Added — they can log in with their username & password')
       }
       setModalOpen(false)
       load()
     } catch (err: any) {
-      toast.error(err.message ?? 'An error occurred')
+      const code = err?.code ?? ''
+      if (code === 'auth/email-already-in-use') toast.error('اسم المستخدم محجوز، اختاري اسم تاني')
+      else if (code === 'auth/weak-password') toast.error('الباسورد لازم يكون 6 حروف/أرقام على الأقل')
+      else if (code === 'auth/invalid-email') toast.error('اسم المستخدم غير صالح (بدون مسافات أو رموز)')
+      else if (code === 'auth/operation-not-allowed') toast.error('لازم تفعّلي Email/Password من إعدادات Firebase Authentication')
+      else toast.error(err?.message ?? 'An error occurred')
     } finally {
       setSaving(false)
     }
@@ -99,7 +121,7 @@ export default function Admins() {
           <table className="w-full" dir="rtl">
             <thead style={{ backgroundColor: '#FDF6F0' }}>
               <tr>
-                {['الاسم', 'التليفون', 'ساعات العمل', 'الحالة', ''].map(h => (
+                {['الاسم', 'الدور', 'اسم المستخدم', 'التليفون', 'ساعات العمل', 'الحالة', ''].map(h => (
                   <th key={h} className="text-right text-xs font-semibold px-4 py-3" style={{ color: '#8B3A52' }}>{h}</th>
                 ))}
               </tr>
@@ -108,7 +130,13 @@ export default function Admins() {
               {admins.map(admin => (
                 <tr key={admin.id} className="border-t hover:bg-[#FDF6F0]/50 transition-colors" style={{ borderColor: '#F2C4CE30' }}>
                   <td className="px-4 py-3 text-sm font-medium text-right">{admin.name}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500 text-right" dir="ltr">{admin.phone}</td>
+                  <td className="px-4 py-3 text-right">
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${admin.role === 'staff' ? 'text-blue-700 bg-blue-50' : 'text-purple-700 bg-purple-50'}`}>
+                      {roleLabels[admin.role] ?? roleLabels.admin}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-500 text-right" dir="ltr">{admin.username || '-'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-500 text-right" dir="ltr">{admin.phone || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-500 text-right">{admin.working_hours || '-'}</td>
                   <td className="px-4 py-3 text-right">
                     <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${admin.is_active ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-100'}`}>
@@ -131,15 +159,59 @@ export default function Admins() {
         </div>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'Edit Admin' : 'Add New Admin'}>
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'Edit Member' : 'Add New Member'}>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1.5">Role</label>
+            <select {...register('role', { required: true })} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }}>
+              <option value="admin">أدمن — كل الصلاحيات</option>
+              <option value="staff">استاف — الحجوزات + بيانات العملاء + التحصيلات</option>
+            </select>
+          </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Name</label>
             <input {...register('name', { required: true })} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.name ? '#ef4444' : '#F2C4CE' }} />
           </div>
+
+          {editTarget ? (
+            <div>
+              <label className="block text-sm font-medium mb-1.5">اسم المستخدم</label>
+              <input value={editTarget.username || '-'} disabled dir="ltr" className="w-full border rounded-xl px-4 py-2.5 text-sm bg-gray-50 text-gray-500" style={{ borderColor: '#F2C4CE' }} />
+              <p className="text-xs text-gray-400 mt-1">اسم المستخدم والباسورد مش بيتغيّروا بعد الإنشاء</p>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="block text-sm font-medium mb-1.5">اسم المستخدم (Username)</label>
+                <input
+                  {...register('username', { required: true, pattern: /^[a-zA-Z0-9._-]+$/ })}
+                  dir="ltr"
+                  placeholder="reem_reception"
+                  autoComplete="off"
+                  className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]"
+                  style={{ borderColor: errors.username ? '#ef4444' : '#F2C4CE' }}
+                />
+                {errors.username && <p className="text-xs text-red-500 mt-1">حروف إنجليزي وأرقام و . _ - بس، من غير مسافات</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1.5">الباسورد (Password)</label>
+                <input
+                  {...register('password', { required: true, minLength: 6 })}
+                  type="text"
+                  dir="ltr"
+                  placeholder="6 حروف/أرقام على الأقل"
+                  autoComplete="new-password"
+                  className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]"
+                  style={{ borderColor: errors.password ? '#ef4444' : '#F2C4CE' }}
+                />
+                {errors.password && <p className="text-xs text-red-500 mt-1">الباسورد لازم 6 على الأقل</p>}
+              </div>
+            </>
+          )}
+
           <div>
-            <label className="block text-sm font-medium mb-1.5">Phone Number</label>
-            <input {...register('phone', { required: true })} dir="ltr" placeholder="01xxxxxxxxx" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.phone ? '#ef4444' : '#F2C4CE' }} />
+            <label className="block text-sm font-medium mb-1.5">Phone Number (اختياري)</label>
+            <input {...register('phone')} dir="ltr" placeholder="01xxxxxxxxx" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1.5">Working Hours</label>
@@ -147,7 +219,7 @@ export default function Admins() {
           </div>
 
           <div className="bg-blue-50 rounded-xl p-3 text-xs text-blue-700">
-            💡 Admin logs in via phone number OTP — no password needed
+            💡 يسجّل الدخول باسم المستخدم والباسورد من تبويب "الإدارة"
           </div>
 
           <div className="flex gap-3 pt-2">

@@ -3,12 +3,13 @@ import { useAuth } from '../../context/AuthContext'
 
 interface Props {
   children: React.ReactNode
-  role: 'super_admin' | 'admin' | 'client'
+  role: 'super_admin' | 'admin' | 'staff' | 'client'
 }
 
 function redirectForRole(role: string) {
   if (role === 'super_admin') return '/super-admin/dashboard'
   if (role === 'admin') return '/admin/dashboard'
+  if (role === 'staff') return '/staff/reservations'
   if (role === 'client') return '/client/home'
   return '/login'
 }
@@ -32,10 +33,10 @@ export default function ProtectedRoute({ children, role }: Props) {
 
   if (!allowed) return <Navigate to={redirectForRole(userProfile.role)} replace />
 
-  // For admin roles, check is_active
-  if ((userProfile.role === 'admin' || userProfile.role === 'super_admin')) {
-    const adminUser = userProfile as { is_active: boolean }
-    if (!adminUser.is_active) return <Navigate to="/login" replace />
+  // For team roles (admin/super_admin/staff), check is_active
+  if (userProfile.role === 'admin' || userProfile.role === 'super_admin' || userProfile.role === 'staff') {
+    const teamUser = userProfile as { is_active: boolean }
+    if (!teamUser.is_active) return <Navigate to="/login" replace />
   }
 
   return <>{children}</>

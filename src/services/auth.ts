@@ -1,10 +1,48 @@
 import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  getAuth,
   signOut as firebaseSignOut
 } from 'firebase/auth'
 import type { ConfirmationResult } from 'firebase/auth'
-import { auth } from './firebase'
+import { initializeApp, deleteApp } from 'firebase/app'
+import { auth, firebaseConfig } from './firebase'
+
+// Team members (admin/staff) log in with a username + password.
+// Firebase Auth works with emails, so we map each username to an internal
+// synthetic email under this domain. The domain is never emailed to.
+const TEAM_EMAIL_DOMAIN = 'team.reem-emam.app'
+
+export function usernameToEmail(username: string): string {
+  return `${username.trim().toLowerCase()}@${TEAM_EMAIL_DOMAIN}`
+}
+
+/**
+ * Signs a team member (admin/staff) in with their username + password.
+ */
+export async function signInWithUsername(username: string, password: string) {
+  return signInWithEmailAndPassword(auth, usernameToEmail(username), password)
+}
+
+/**
+ * Creates a Firebase Auth account for a new team member WITHOUT signing the
+ * current (super-admin) user out. Uses a throw-away secondary app instance so
+ * the primary session is untouched. Returns the new user's UID.
+ */
+export async function createTeamMemberAuth(username: string, password: string): Promise<string> {
+  const secondaryApp = initializeApp(firebaseConfig, `secondary-${Date.now()}`)
+  const secondaryAuth = getAuth(secondaryApp)
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, usernameToEmail(username), password)
+    const uid = cred.user.uid
+    await firebaseSignOut(secondaryAuth)
+    return uid
+  } finally {
+    await deleteApp(secondaryApp)
+  }
+}
 
 // Keep track of the single active verifier instance
 let globalVerifier: RecaptchaVerifier | null = null

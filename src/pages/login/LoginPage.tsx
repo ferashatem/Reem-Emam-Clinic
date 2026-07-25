@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { ConfirmationResult } from 'firebase/auth'
 import toast from 'react-hot-toast'
-import { initRecaptcha, sendOTP } from '../../services/auth'
+import { initRecaptcha, sendOTP, signInWithUsername } from '../../services/auth'
 import { useAuth } from '../../context/AuthContext'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 
@@ -15,6 +15,8 @@ export default function LoginPage() {
   const [step, setStep] = useState<'phone' | 'otp'>('phone')
   const [phone, setPhone] = useState('')
   const [otp, setOtp] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [confirmation, setConfirmation] = useState<ConfirmationResult | null>(null)
   const [resendCountdown, setResendCountdown] = useState(0)
@@ -29,7 +31,9 @@ export default function LoginPage() {
         const isNewClient = !clientProfile?.name || clientProfile.name === clientProfile?.phone
         navigate(isNewClient ? '/client/onboarding' : '/client/home', { replace: true })
       }
-      else navigate(role === 'super_admin' ? '/super-admin/dashboard' : '/admin/dashboard', { replace: true })
+      else if (role === 'super_admin') navigate('/super-admin/dashboard', { replace: true })
+      else if (role === 'staff') navigate('/staff/reservations', { replace: true })
+      else navigate('/admin/dashboard', { replace: true })
     }
   }, [role, authLoading, navigate])
 
@@ -64,9 +68,37 @@ export default function LoginPage() {
     setStep('phone')
     setPhone('')
     setOtp('')
+    setUsername('')
+    setPassword('')
     setConfirmation(null)
     setResendCountdown(0)
     if (countdownRef.current) clearInterval(countdownRef.current)
+  }
+
+  async function handleAdminLogin(e: React.FormEvent) {
+    e.preventDefault()
+    if (!username.trim() || !password) return toast.error('أدخلي اسم المستخدم والباسورد')
+    setLoading(true)
+    try {
+      await signInWithUsername(username, password)
+      // Redirect handled by the auth-state effect above
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? ''
+      if (
+        code === 'auth/invalid-credential' ||
+        code === 'auth/wrong-password' ||
+        code === 'auth/user-not-found' ||
+        code === 'auth/invalid-email'
+      ) {
+        toast.error('اسم المستخدم أو الباسورد غير صحيح')
+      } else if (code === 'auth/too-many-requests') {
+        toast.error('محاولات كتير، حاولي بعد شوية')
+      } else {
+        toast.error('فشل تسجيل الدخول، حاولي تاني')
+      }
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function doSendOTP(normalized: string) {
@@ -181,7 +213,55 @@ export default function LoginPage() {
 
         {/* Card */}
         <div className="bg-white rounded-2xl shadow-lg p-8 border" style={{ borderColor: '#F2C4CE' }}>
-          {step === 'phone' ? (
+          {tab === 'admin' ? (
+            <form onSubmit={handleAdminLogin} className="space-y-5">
+              <div>
+                <h2 className="text-xl font-semibold mb-1" style={{ color: '#2C1A1D' }}>تسجيل دخول الإدارة</h2>
+                <p className="text-sm text-gray-500">أدخلي اسم المستخدم والباسورد</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2" style={{ color: '#2C1A1D' }}>اسم المستخدم</label>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  placeholder="username"
+                  dir="ltr"
+                  autoComplete="username"
+                  className="w-full border rounded-xl px-4 py-3 text-sm focus:outline-none transition-all text-right"
+                  style={{ borderColor: '#F2C4CE' }}
+                  onFocus={e => (e.target.style.borderColor = '#8B3A52')}
+                  onBlur={e => (e.target.style.borderColor = '#F2C4CE')}
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2" style={{ color: '#2C1A1D' }}>الباسورد</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••"
+                  dir="ltr"
+                  autoComplete="current-password"
+                  className="w-full border rounded-xl px-4 py-3 text-sm focus:outline-none transition-all text-right"
+                  style={{ borderColor: '#F2C4CE' }}
+                  onFocus={e => (e.target.style.borderColor = '#8B3A52')}
+                  onBlur={e => (e.target.style.borderColor = '#F2C4CE')}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-3 rounded-xl font-semibold text-white transition-colors disabled:opacity-50"
+                style={{ backgroundColor: '#8B3A52' }}
+              >
+                {loading ? 'جارٍ الدخول...' : 'تسجيل الدخول'}
+              </button>
+            </form>
+          ) : step === 'phone' ? (
             <form onSubmit={handleSendOTP} className="space-y-5">
               <div>
                 <h2 className="text-xl font-semibold mb-1" style={{ color: '#2C1A1D' }}>

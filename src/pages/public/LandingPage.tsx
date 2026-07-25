@@ -1,7 +1,5 @@
 import { useLayoutEffect } from 'react'
 import '../../App.css'
-import Cursor from '../../components/Cursor'
-import { Particles } from '../../components/Particles'
 import Navbar from '../../components/Navbar'
 import Hero from '../../components/Hero'
 import About from '../../components/About'
@@ -19,19 +17,17 @@ export default function LandingPage() {
 
   useLayoutEffect(() => {
     const observer = new IntersectionObserver(
-      entries => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('in') }),
-      { threshold: 0.12 }
+      entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('show'); observer.unobserve(e.target) } }),
+      { threshold: 0.14, rootMargin: '0px 0px -8% 0px' }
     )
-    document.querySelectorAll('.fi').forEach(el => observer.observe(el))
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el))
     return () => observer.disconnect()
   }, [])
 
   return (
     <>
-      <Cursor />
-      <Particles />
       <Navbar />
-      <main>
+      <main className="lp-main">
         <Hero />
         <About />
         <Services />
