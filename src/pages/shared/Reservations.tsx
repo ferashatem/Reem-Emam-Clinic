@@ -582,12 +582,7 @@ export default function StaffReservations() {
             <Select
               {...register('service_id', {
                 required: 'اختاري الخدمة',
-                onChange: e => {
-                  setPriceTouched(false)
-                  // Start from the service's usual pulse count; the assistant edits it if the session ran longer.
-                  const next = toNumber(serviceMap[e.target.value]?.default_pulses)
-                  setValue('pulses', next > 0 ? String(next) : '')
-                },
+                onChange: () => setPriceTouched(false),
               })}
               invalid={!!errors.service_id}
             >

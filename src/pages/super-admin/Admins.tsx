@@ -17,7 +17,7 @@ import type { Role, TeamMember } from '../../types'
 
 interface MemberForm {
   name: string
-  username: string
+  email: string
   password: string
   phone: string
   working_hours: string
@@ -28,19 +28,19 @@ const roles: { value: Role; label: string; description: string; color: string }[
   {
     value: 'super_admin',
     label: 'مدير عام',
-    description: 'كل الصلاحيات + إدارة الفريق والخدمات والإعدادات',
+    description: 'كل حاجة — بما فيها الخدمات وحسابات الفريق وإعدادات العيادة',
     color: '#7C3AED',
   },
   {
     value: 'admin',
     label: 'دكتورة / شريكة',
-    description: 'الحجوزات وملفات المرضى والحسابات والجرد',
+    description: 'الرئيسية، الحجوزات، الدفع، ملفات المرضى، الحسابات والجرد، تقارير الجلسات',
     color: '#8B3A52',
   },
   {
     value: 'staff',
     label: 'أسيستانت',
-    description: 'الحجوزات والدفع بس',
+    description: 'شاشتين بس — الحجوزات والدفع. مش هيشوف الحسابات ولا المصاريف ولا ملفات المرضى',
     color: '#2563EB',
   },
 ]
@@ -58,14 +58,17 @@ export default function Admins() {
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<MemberForm>()
+  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<MemberForm>()
+
+  // Describes the role currently picked in the form — not the one being edited
+  const selectedRole = roleOf(watch('role'))
 
   /** Locking yourself out is the one mistake this page must not allow. */
   const isSelf = (m: TeamMember) => m.uid === userProfile?.uid || m.id === userProfile?.uid
 
   function openCreate() {
     setEditTarget(null)
-    reset({ name: '', username: '', password: '', phone: '', working_hours: '', role: 'admin' })
+    reset({ name: '', email: '', password: '', phone: '', working_hours: '', role: 'admin' })
     setModalOpen(true)
   }
 
@@ -73,7 +76,7 @@ export default function Admins() {
     setEditTarget(m)
     reset({
       name: m.name ?? '',
-      username: m.username ?? '',
+      email: m.email ?? '',
       password: '',
       phone: m.phone ?? '',
       working_hours: m.working_hours ?? '',
@@ -82,13 +85,16 @@ export default function Admins() {
     setModalOpen(true)
   }
 
+  /** Older accounts were created with a bare username; newer ones use a real email. */
+  const loginIdOf = (m: TeamMember) => m.email || m.username || '—'
+
   async function onSubmit(values: MemberForm) {
     setSaving(true)
     try {
       const phone = values.phone ? normalizePhone(values.phone) : ''
 
       if (editTarget) {
-        // Username & password are fixed at creation — they belong to the auth account
+        // Email & password are fixed at creation — they belong to the auth account
         await updateAdmin(editTarget.id, {
           name: values.name.trim(),
           phone,
@@ -97,29 +103,29 @@ export default function Admins() {
         })
         toast.success('تم حفظ التعديل')
       } else {
-        const username = values.username.trim().toLowerCase()
-        // 1) Firebase Auth account (username → internal email + password)
-        const uid = await createTeamMemberAuth(username, values.password)
+        const email = values.email.trim().toLowerCase()
+        // 1) Firebase Auth account (email + password)
+        const uid = await createTeamMemberAuth(email, values.password)
         // 2) Firestore profile keyed by the real UID — this is what grants the role
         await createAdmin({
           uid,
-          username,
+          email,
           name: values.name.trim(),
           phone,
           working_hours: values.working_hours?.trim() ?? '',
           role: values.role,
           created_by: userProfile?.uid ?? '',
         })
-        toast.success('تم إنشاء الحساب ✅ تقدر تدخل باسم المستخدم والباسورد')
+        toast.success('تم إنشاء الحساب ✅ يقدر يدخل بالإيميل والباسورد')
       }
 
       setModalOpen(false)
       reload()
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code ?? ''
-      if (code === 'auth/email-already-in-use') toast.error('اسم المستخدم محجوز — اختاري اسم تاني')
+      if (code === 'auth/email-already-in-use') toast.error('الإيميل ده متسجّل قبل كده — استخدمي إيميل تاني')
       else if (code === 'auth/weak-password') toast.error('الباسورد لازم 6 حروف/أرقام على الأقل')
-      else if (code === 'auth/invalid-email') toast.error('اسم المستخدم مش صالح (من غير مسافات أو رموز)')
+      else if (code === 'auth/invalid-email') toast.error('الإيميل مش صحيح')
       else if (code === 'auth/operation-not-allowed') {
         toast.error('فعّلي Email/Password من إعدادات Firebase Authentication', { duration: 6000 })
       } else toast.error(messageFor(err))
@@ -220,7 +226,7 @@ export default function Admins() {
                     </span>
                   </div>
                   <p className="text-xs text-gray-400 mt-1" dir="ltr">
-                    {m.username || m.email || '—'}
+                    {loginIdOf(m)}
                     {m.phone ? ` · ${m.phone}` : ''}
                     {m.working_hours ? ` · ${m.working_hours}` : ''}
                   </p>
@@ -261,10 +267,16 @@ export default function Admins() {
         title={editTarget ? 'تعديل حساب' : 'إضافة حساب جديد'}
       >
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <Field label="الصلاحية" required hint={roleOf(editTarget?.role).description}>
+          <Field label="الصلاحية" required>
             <Select {...register('role', { required: true })}>
-              {roles.map(r => <option key={r.value} value={r.value}>{r.label} — {r.description}</option>)}
+              {roles.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
             </Select>
+            <div
+              className="mt-2 rounded-xl px-3 py-2.5 text-xs leading-relaxed"
+              style={{ backgroundColor: `${selectedRole.color}12`, color: selectedRole.color }}
+            >
+              <strong>{selectedRole.label}</strong> هيشوف: {selectedRole.description}
+            </div>
           </Field>
 
           <Field label="الاسم" required error={errors.name && 'اكتبي الاسم'}>
@@ -272,22 +284,26 @@ export default function Admins() {
           </Field>
 
           {editTarget ? (
-            <Field label="اسم المستخدم" hint="اسم المستخدم والباسورد مش بيتغيّروا بعد الإنشاء">
-              <Input value={editTarget.username || editTarget.email || '—'} disabled dir="ltr" />
+            <Field label="الإيميل" hint="الإيميل والباسورد مش بيتغيّروا بعد الإنشاء">
+              <Input value={loginIdOf(editTarget)} disabled dir="ltr" />
             </Field>
           ) : (
             <>
               <Field
-                label="اسم المستخدم"
+                label="الإيميل"
                 required
-                error={errors.username && 'حروف إنجليزي وأرقام و . _ - بس، من غير مسافات'}
-                hint="ده اللي هتدخل بيه — مش إيميل"
+                error={errors.email && 'اكتبي إيميل صحيح'}
+                hint="ده اللي هيدخل بيه من صفحة تسجيل الدخول"
               >
                 <Input
-                  {...register('username', { required: true, pattern: /^[a-zA-Z0-9._-]+$/ })}
-                  invalid={!!errors.username}
+                  {...register('email', {
+                    required: true,
+                    pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+                  })}
+                  invalid={!!errors.email}
+                  type="email"
                   dir="ltr"
-                  placeholder="reem"
+                  placeholder="reem@example.com"
                   autoComplete="off"
                 />
               </Field>

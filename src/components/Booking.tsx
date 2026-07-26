@@ -1,27 +1,50 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import toast from 'react-hot-toast'
-import { addDoc, collection, Timestamp } from 'firebase/firestore'
-import { db } from '../services/firebase'
+import { createReservation, getActiveServices } from '../services/firestore'
+import { normalizePhone } from '../utils/validators'
+import { toNumber, todayISO } from '../utils/formatters'
 import { useLang } from '../context/LangContext'
+import type { Service } from '../types'
 
 export default function Booking() {
   const { tr } = useLang()
   const b = tr.booking
   const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [services, setServices] = useState<Service[]>([])
+
+  // The select must offer real services so the request lands on a priced booking.
+  useEffect(() => {
+    getActiveServices()
+      .then(setServices)
+      .catch(() => setServices([]))
+  }, [])
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const form = e.target as HTMLFormElement
     const data = new FormData(form)
+    const service = services.find(s => s.id === data.get('service'))
     setLoading(true)
     try {
-      await addDoc(collection(db, 'contact_requests'), {
-        name: data.get('name'),
-        phone: data.get('phone'),
-        service: data.get('service'),
-        date: data.get('date'),
-        created_at: Timestamp.now(),
+      // Same shape the booking modal writes, so it shows up in «طلبات من الموقع».
+      await createReservation({
+        client_id: null,
+        client_name: String(data.get('name') ?? '').trim(),
+        client_phone: normalizePhone(String(data.get('phone') ?? '')),
+        service_id: service?.id ?? null,
+        service_name: service?.name ?? null,
+        pulses: null,
+        price_per_pulse: null,
+        price_at_booking: toNumber(service?.price),
+        paid_amount: 0,
+        payment_status: 'unpaid',
+        date: String(data.get('date') ?? ''),
+        time: String(data.get('time') ?? ''),
+        notes: '',
+        status: 'pending',
+        booked_by: 'client',
+        admin_id: null,
       })
       setSuccess(true)
       form.reset()
@@ -33,59 +56,67 @@ export default function Booking() {
     }
   }
 
-  const services = tr.services.items.map(s => s.name)
-
   return (
-    <section id="booking" className="section section--blush">
+    <section id="booking" className="section section--wine book">
       <div className="wrap book__grid">
         <div className="book__aside">
           <span className="eyebrow reveal">{b.label}</span>
           <h2 className="title reveal d1">{b.title} <span className="soft">{b.titleB}</span></h2>
           <p className="sub reveal d2">{b.intro}</p>
-          <ul className="book__perks reveal d2">
-            {b.perks.map(p => <li key={p}><span className="chk">✓</span>{p}</li>)}
+          <ul className="book__perks reveal d3">
+            {b.perks.map(p => <li key={p}><span className="chk" aria-hidden>✓</span>{p}</li>)}
           </ul>
-          <div className="book__contacts reveal d3">
+          <div className="book__contacts reveal d4">
             <a href="tel:+966500000000" className="book__contact">
-              <span className="ico">📞</span>{b.contacts.phone.value}
+              <span className="ico" aria-hidden>📞</span>{b.contacts.phone.value}
             </a>
             <a href="https://instagram.com" target="_blank" rel="noreferrer" className="book__contact">
-              <span className="ico">📷</span>{b.contacts.instagram.value}
+              <span className="ico" aria-hidden>📷</span>{b.contacts.instagram.value}
             </a>
           </div>
         </div>
 
-        <div className="book__card reveal d2">
+        <div className="book__card reveal reveal--right d2">
           {!success ? (
-            <form className="form" onSubmit={handleSubmit}>
-              <div className="form-row">
-                <div className="field">
-                  <label>{b.name}</label>
-                  <input name="name" type="text" placeholder={b.namePh} required />
+            <>
+              <h3>{b.formTitle}</h3>
+              <p className="hint">{b.formHint}</p>
+              <form className="form" onSubmit={handleSubmit}>
+                <div className="form-row">
+                  <div className="field">
+                    <label htmlFor="bk-name">{b.name}</label>
+                    <input id="bk-name" name="name" type="text" placeholder={b.namePh} required />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bk-phone">{b.phone}</label>
+                    <input id="bk-phone" name="phone" type="tel" placeholder={b.phonePh} required />
+                  </div>
                 </div>
                 <div className="field">
-                  <label>{b.phone}</label>
-                  <input name="phone" type="tel" placeholder={b.phonePh} required />
+                  <label htmlFor="bk-service">{b.service}</label>
+                  <select id="bk-service" name="service" required defaultValue="">
+                    <option value="" disabled>{b.servicePh}</option>
+                    {services.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
                 </div>
-              </div>
-              <div className="field">
-                <label>{b.service}</label>
-                <select name="service" required defaultValue="">
-                  <option value="" disabled>{b.servicePh}</option>
-                  {services.map(s => <option key={s}>{s}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>{b.date}</label>
-                <input name="date" type="date" required />
-              </div>
-              <button type="submit" className="btn btn--primary" disabled={loading} style={{ width: '100%' }}>
-                {loading ? '...' : b.submit}
-              </button>
-            </form>
+                <div className="form-row">
+                  <div className="field">
+                    <label htmlFor="bk-date">{b.date}</label>
+                    <input id="bk-date" name="date" type="date" required min={todayISO()} />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="bk-time">{b.time}</label>
+                    <input id="bk-time" name="time" type="time" required />
+                  </div>
+                </div>
+                <button type="submit" className="btn btn--primary btn--block" disabled={loading}>
+                  <span>{loading ? '…' : b.submit}</span>
+                </button>
+              </form>
+            </>
           ) : (
             <div className="success">
-              <div className="ico">🌸</div>
+              <div className="ico" aria-hidden>✦</div>
               <h3>{b.successTitle}</h3>
               <p>{b.successSub}</p>
             </div>

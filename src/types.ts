@@ -44,11 +44,9 @@ export interface Service {
   name: string
   description?: string
   duration_minutes?: number
-  /** Full price of one session of this service. */
-  price: number
-  /** Pulses one session normally takes. Set it to price the service per pulse. */
-  default_pulses?: number | null
-  /** Derived on save: price ÷ default_pulses. The booking form charges pulses × this. */
+  /** Flat session price. Used when price_per_pulse is not set. */
+  price?: number | null
+  /** When set (> 0), the booking form charges pulses × this value. */
   price_per_pulse?: number | null
   is_active?: boolean
   created_at?: Timestamp

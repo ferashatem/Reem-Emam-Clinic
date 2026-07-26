@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
-import { signInWithUsername } from '../../services/auth'
+import { signInWithUsername, usernameToEmail } from '../../services/auth'
 import { useAuth } from '../../context/AuthContext'
 import { Spinner } from '../../components/ui/Feedback'
 import { C } from '../../theme'
@@ -24,7 +24,7 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!username.trim() || !password) {
-      toast.error('اكتبي اسم المستخدم والباسورد')
+      toast.error('اكتبي الإيميل والباسورد')
       return
     }
     setLoading(true)
@@ -33,13 +33,16 @@ export default function LoginPage() {
       // Redirect handled by the auth-state effect above
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code ?? ''
+      // The generic message hides which of the two sides failed — log the real
+      // reason so a failing account can be diagnosed instead of guessed at.
+      console.error('Login failed', { email: usernameToEmail(username), code, err })
       if (
         code === 'auth/invalid-credential' ||
         code === 'auth/wrong-password' ||
         code === 'auth/user-not-found' ||
         code === 'auth/invalid-email'
       ) {
-        toast.error('اسم المستخدم أو الباسورد غلط')
+        toast.error('الإيميل أو الباسورد غلط')
       } else if (code === 'auth/too-many-requests') {
         toast.error('محاولات كتير — حاولي بعد شوية')
       } else if (code === 'auth/network-request-failed') {
@@ -87,14 +90,16 @@ export default function LoginPage() {
 
             <div>
               <label htmlFor="username" className="block text-sm font-medium mb-2" style={{ color: C.text }}>
-                اسم المستخدم أو الإيميل
+                الإيميل
               </label>
               <input
                 id="username"
+                // Not type="email" — legacy accounts sign in with a bare username
                 type="text"
+                inputMode="email"
                 value={username}
                 onChange={e => setUsername(e.target.value)}
-                placeholder="username أو you@example.com"
+                placeholder="you@example.com"
                 dir="ltr"
                 autoComplete="username"
                 className={inputClass}

@@ -302,25 +302,6 @@ export default function Accounting() {
                 />
               </div>
 
-              {/* The answer to "هل غطينا مصاريفنا؟" */}
-              <section
-                className="rounded-2xl p-5 border"
-                style={{
-                  backgroundColor: profitable ? '#ECFDF5' : '#FEF2F2',
-                  borderColor: profitable ? '#A7F3D0' : '#FECACA',
-                }}
-              >
-                <p className="text-sm font-semibold mb-1" style={{ color: profitable ? '#065F46' : '#991B1B' }}>
-                  {profitable
-                    ? '✅ التحصيلات غطّت المصاريف'
-                    : '⚠️ المصاريف أكبر من التحصيلات الشهر ده'}
-                </p>
-                <p className="text-xs" style={{ color: profitable ? '#047857' : '#B91C1C' }}>
-                  {formatMoney(book.revenue)} تحصيلات − {formatMoney(book.totalExpenses)} مصاريف ={' '}
-                  <strong>{profitable ? '+' : '−'}{formatMoney(Math.abs(book.netProfit))}</strong>
-                </p>
-              </section>
-
               {/* Partner split */}
               <section>
                 <h2 className="text-sm font-bold mb-3" style={{ color: C.primary }}>

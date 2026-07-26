@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useLang } from '../context/LangContext'
+import BrandMark from './brand/BrandMark'
 
 export default function Footer() {
   const { tr, lang } = useLang()
@@ -7,18 +8,24 @@ export default function Footer() {
 
   return (
     <footer className="foot">
+      <div className="foot__watermark" aria-hidden>Reem Glow House</div>
+
       <div className="foot__grid">
         <div className="foot__col">
           <div className="foot__brand">
-            {lang === 'ar' ? (<>ريم <em>غلو</em> هاوس</>) : (<>Reem <em>Glow</em> House</>)}
+            <BrandMark />
+            <span className="foot__brand-text">
+              <b>{lang === 'ar' ? 'ريم غلو هاوس' : 'Reem Glow House'}</b>
+              <em>Believe in your Glow ♡</em>
+            </span>
           </div>
           <p className="foot__tag">{f.tag}</p>
-          <a href="#booking" className="btn btn--light btn--sm">{f.getStarted}</a>
+          <a href="#booking" className="btn btn--gold btn--sm"><span>{f.getStarted}</span></a>
           <div className="foot__socials">
-            <a href="#" className="foot__s" aria-label="Instagram">📸</a>
-            <a href="#" className="foot__s" aria-label="TikTok">🎵</a>
-            <a href="#" className="foot__s" aria-label="WhatsApp">💬</a>
-            <a href="#" className="foot__s" aria-label="Snapchat">👻</a>
+            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Instagram">📸</a>
+            <a href="https://tiktok.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="TikTok">🎵</a>
+            <a href="https://wa.me/966500000000" target="_blank" rel="noreferrer" className="foot__s" aria-label="WhatsApp">💬</a>
+            <a href="https://snapchat.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Snapchat">👻</a>
           </div>
         </div>
 
@@ -27,6 +34,7 @@ export default function Footer() {
           <ul>
             <li><a href="#about">{tr.nav.about}</a></li>
             <li><Link to="/services">{tr.nav.services}</Link></li>
+            <li><a href="#gallery">{tr.nav.gallery}</a></li>
             <li><a href="#why-us">{tr.nav.why}</a></li>
             <li><a href="#testimonials">{tr.nav.reviews}</a></li>
             <li><a href="#booking">{tr.nav.cta}</a></li>
@@ -43,26 +51,25 @@ export default function Footer() {
         </div>
 
         <div className="foot__col">
-          <h4>{f.newsTitle}</h4>
-          <p className="foot__tag">{tr.booking.contacts.location.value}</p>
-          <form className="foot__news" onSubmit={e => e.preventDefault()}>
-            <input type="email" placeholder={f.newsPh} aria-label={f.newsPh} />
-            <button type="submit" className="btn btn--light btn--sm">{f.subscribe}</button>
-          </form>
-          <h4 style={{ marginTop: '1.4rem' }}>{f.contactTitle}</h4>
+          <h4>{f.contactTitle}</h4>
           <ul>
             <li><a href="tel:+966500000000">{tr.booking.contacts.phone.value}</a></li>
             <li><a href="https://instagram.com" target="_blank" rel="noreferrer">{tr.booking.contacts.instagram.value}</a></li>
           </ul>
+          <p className="foot__tag" style={{ marginTop: '0.9rem' }}>{tr.booking.contacts.location.value}</p>
+
+          <h4 style={{ marginTop: '1.6rem' }}>{f.newsTitle}</h4>
+          <form className="foot__news" onSubmit={e => e.preventDefault()}>
+            <input type="email" placeholder={f.newsPh} aria-label={f.newsPh} />
+            <button type="submit" className="btn btn--light btn--sm"><span>{f.subscribe}</span></button>
+          </form>
         </div>
       </div>
 
       <div className="foot__copy">
-        {f.copy}
+        <span>{f.copy}</span>
         {/* Team entrance — clients never sign in, so it stays out of the main nav */}
-        <Link to="/login" style={{ marginInlineStart: '1rem', opacity: 0.6, fontSize: '0.85em' }}>
-          {lang === 'ar' ? 'دخول الفريق' : 'Staff login'}
-        </Link>
+        <Link to="/login">{lang === 'ar' ? 'دخول الفريق' : 'Staff login'}</Link>
       </div>
     </footer>
   )
