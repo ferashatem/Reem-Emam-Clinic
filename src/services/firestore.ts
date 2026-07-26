@@ -1,11 +1,35 @@
 import {
   collection, doc, getDoc, getDocs, addDoc, updateDoc, query,
-  where, Timestamp, setDoc
+  where, Timestamp, setDoc, runTransaction,
 } from 'firebase/firestore'
 import type { DocumentData } from 'firebase/firestore'
 import { db } from './firebase'
+import { monthKey, toNumber, todayISO } from '../utils/formatters'
+import type {
+  Client, Expense, MonthlyClosing, Payment, Reservation,
+  SessionReport, Service,
+} from '../types'
 
 const now = () => Timestamp.now()
+
+/** Maps a snapshot to `{ id, ...data }` and drops soft-deleted rows. */
+function live<T>(docs: { id: string; data: () => DocumentData }[]): T[] {
+  return docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter((r) => (r as DocumentData).deleted_at == null) as T[]
+}
+
+function bySeconds(field: string) {
+  return (a: DocumentData, b: DocumentData) =>
+    (b[field]?.seconds ?? 0) - (a[field]?.seconds ?? 0)
+}
+
+/** Newest first by 'YYYY-MM-DD' + 'HH:mm'. */
+function byDateDesc(a: DocumentData, b: DocumentData) {
+  const l = `${a.date ?? ''} ${a.time ?? ''}`
+  const r = `${b.date ?? ''} ${b.time ?? ''}`
+  return r.localeCompare(l)
+}
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 
@@ -62,20 +86,14 @@ export async function softDeleteAdmin(uid: string) {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-export async function getServices() {
+export async function getServices(): Promise<Service[]> {
   const snap = await getDocs(collection(db, 'services'))
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((s: DocumentData) => s.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
+  return live<Service>(snap.docs).sort(bySeconds('created_at'))
 }
 
-export async function getActiveServices() {
-  const snap = await getDocs(collection(db, 'services'))
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((s: DocumentData) => s.is_active === true && s.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
+export async function getActiveServices(): Promise<Service[]> {
+  const all = await getServices()
+  return all.filter(s => s.is_active === true)
 }
 
 export async function createService(data: DocumentData) {
@@ -97,12 +115,9 @@ export async function softDeleteService(id: string) {
 
 // ─── Clients ─────────────────────────────────────────────────────────────────
 
-export async function getClients() {
+export async function getClients(): Promise<Client[]> {
   const snap = await getDocs(collection(db, 'clients'))
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((c: DocumentData) => c.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
+  return live<Client>(snap.docs).sort(bySeconds('created_at'))
 }
 
 export async function getClientById(id: string) {
@@ -156,37 +171,39 @@ export async function softDeleteClient(id: string) {
 
 // ─── Reservations ────────────────────────────────────────────────────────────
 
-export async function getReservationsByClient(clientId: string) {
+export async function getReservations(
+  filters?: { adminId?: string; date?: string; month?: string; status?: string }
+): Promise<Reservation[]> {
+  const snap = await getDocs(collection(db, 'reservations'))
+  let results = live<Reservation>(snap.docs).sort(byDateDesc)
+
+  if (filters?.adminId) results = results.filter(r => r.admin_id === filters.adminId)
+  if (filters?.date) results = results.filter(r => r.date === filters.date)
+  if (filters?.month) results = results.filter(r => (r.date ?? '').startsWith(filters.month!))
+  if (filters?.status) results = results.filter(r => r.status === filters.status)
+
+  return results
+}
+
+export async function getReservationsByClient(clientId: string): Promise<Reservation[]> {
   const q = query(collection(db, 'reservations'), where('client_id', '==', clientId))
   const snap = await getDocs(q)
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((r: DocumentData) => r.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.date > a.date ? 1 : -1))
-}
-
-export async function getSessionReportsByClient(clientId: string) {
-  const q = query(collection(db, 'session_reports'), where('client_id', '==', clientId))
-  const snap = await getDocs(q)
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
-}
-
-export async function getReviewByReservation(reservationId: string) {
-  const q = query(
-    collection(db, 'reviews'),
-    where('reservation_id', '==', reservationId),
-    where('deleted_at', '==', null)
-  )
-  const snap = await getDocs(q)
-  if (snap.empty) return null
-  return { id: snap.docs[0].id, ...snap.docs[0].data() }
+  return live<Reservation>(snap.docs).sort(byDateDesc)
 }
 
 export async function getReservationById(id: string) {
   const snap = await getDoc(doc(db, 'reservations', id))
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null
+  return snap.exists() ? { id: snap.id, ...snap.data() } as Reservation : null
+}
+
+export async function getPendingClientReservations(): Promise<Reservation[]> {
+  const q = query(
+    collection(db, 'reservations'),
+    where('booked_by', '==', 'client'),
+    where('status', '==', 'pending')
+  )
+  const snap = await getDocs(q)
+  return live<Reservation>(snap.docs).sort(bySeconds('created_at'))
 }
 
 export async function getAvailableTimeSlots(date: string): Promise<string[]> {
@@ -208,38 +225,12 @@ export async function getAvailableTimeSlots(date: string): Promise<string[]> {
   return slots
 }
 
-// ─── (original Reservations section continues below) ─────────────────────────
-
-export async function getPendingClientReservations() {
-  const q = query(
-    collection(db, 'reservations'),
-    where('booked_by', '==', 'client'),
-    where('status', '==', 'pending')
-  )
-  const snap = await getDocs(q)
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((r: DocumentData) => r.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
-}
-
-export async function getReservations(filters?: { adminId?: string; date?: string; status?: string }) {
-  const snap = await getDocs(collection(db, 'reservations'))
-  let results = snap.docs.map(d => ({ id: d.id, ...d.data() })) as DocumentData[]
-  results = results.filter((r: DocumentData) => r.deleted_at === null)
-  results = results.sort((a: DocumentData, b: DocumentData) => (b.date > a.date ? 1 : -1))
-
-  if (filters?.adminId) results = results.filter((r: DocumentData) => r.admin_id === filters.adminId)
-  if (filters?.date) results = results.filter((r: DocumentData) => r.date === filters.date)
-  if (filters?.status) results = results.filter((r: DocumentData) => r.status === filters.status)
-
-  return results
-}
-
 export async function createReservation(data: DocumentData) {
   return addDoc(collection(db, 'reservations'), {
-    ...data,
     status: 'pending',
+    paid_amount: 0,
+    payment_status: 'unpaid',
+    ...data,
     created_at: now(),
     deleted_at: null,
   })
@@ -274,15 +265,24 @@ export async function updateTimetableSlot(id: string, data: Partial<DocumentData
   return updateDoc(doc(db, 'timetable', id), data)
 }
 
-// ─── Session Reports ──────────────────────────────────────────────────────────
+// ─── Session Reports ─────────────────────────────────────────────────────────
 
-export async function getSessionReports(filters?: { adminId?: string; clientId?: string }) {
+export async function getSessionReports(
+  filters?: { adminId?: string; clientId?: string }
+): Promise<SessionReport[]> {
   const snap = await getDocs(collection(db, 'session_reports'))
-  let results = snap.docs.map(d => ({ id: d.id, ...d.data() })) as DocumentData[]
-  results = results.sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
-  if (filters?.adminId) results = results.filter((r: DocumentData) => r.admin_id === filters.adminId)
-  if (filters?.clientId) results = results.filter((r: DocumentData) => r.client_id === filters.clientId)
+  let results = (snap.docs.map(d => ({ id: d.id, ...d.data() })) as SessionReport[])
+    .sort(bySeconds('created_at'))
+  if (filters?.adminId) results = results.filter(r => r.admin_id === filters.adminId)
+  if (filters?.clientId) results = results.filter(r => r.client_id === filters.clientId)
   return results
+}
+
+export async function getSessionReportsByClient(clientId: string): Promise<SessionReport[]> {
+  const q = query(collection(db, 'session_reports'), where('client_id', '==', clientId))
+  const snap = await getDocs(q)
+  return (snap.docs.map(d => ({ id: d.id, ...d.data() })) as SessionReport[])
+    .sort(bySeconds('created_at'))
 }
 
 export async function createSessionReport(data: DocumentData) {
@@ -293,14 +293,22 @@ export async function createSessionReport(data: DocumentData) {
   })
 }
 
-// ─── Reviews ──────────────────────────────────────────────────────────────────
+// ─── Reviews ─────────────────────────────────────────────────────────────────
 
 export async function getReviews() {
   const snap = await getDocs(collection(db, 'reviews'))
-  return snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter((r: DocumentData) => r.deleted_at === null)
-    .sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
+  return live<DocumentData & { id: string }>(snap.docs).sort(bySeconds('created_at'))
+}
+
+export async function getReviewByReservation(reservationId: string) {
+  const q = query(
+    collection(db, 'reviews'),
+    where('reservation_id', '==', reservationId),
+    where('deleted_at', '==', null)
+  )
+  const snap = await getDocs(q)
+  if (snap.empty) return null
+  return { id: snap.docs[0].id, ...snap.docs[0].data() }
 }
 
 export async function createReview(data: DocumentData) {
@@ -316,31 +324,186 @@ export async function updateReview(id: string, data: Partial<DocumentData>) {
   return updateDoc(doc(db, 'reviews', id), data)
 }
 
-// ─── Payments / Collections (تحصيلات) ─────────────────────────────────────────
+// ─── Payments / Collections (التحصيلات) ──────────────────────────────────────
 
-export async function getPayments(filters?: { staffId?: string; date?: string }) {
+export async function getPayments(
+  filters?: { staffId?: string; date?: string; month?: string; clientId?: string }
+): Promise<Payment[]> {
   const snap = await getDocs(collection(db, 'payments'))
-  let results = snap.docs.map(d => ({ id: d.id, ...d.data() })) as DocumentData[]
-  results = results.filter((p: DocumentData) => p.deleted_at === null)
-  results = results.sort((a: DocumentData, b: DocumentData) => (b.created_at?.seconds ?? 0) - (a.created_at?.seconds ?? 0))
-  if (filters?.staffId) results = results.filter((p: DocumentData) => p.staff_id === filters.staffId)
-  if (filters?.date) results = results.filter((p: DocumentData) => p.date === filters.date)
+  let results = live<Payment>(snap.docs).sort(bySeconds('created_at'))
+  if (filters?.staffId) results = results.filter(p => p.staff_id === filters.staffId)
+  if (filters?.date) results = results.filter(p => p.date === filters.date)
+  if (filters?.month) results = results.filter(p => monthOf(p) === filters.month)
+  if (filters?.clientId) results = results.filter(p => p.client_id === filters.clientId)
   return results
 }
 
+export async function getPaymentsByClient(clientId: string): Promise<Payment[]> {
+  const q = query(collection(db, 'payments'), where('client_id', '==', clientId))
+  const snap = await getDocs(q)
+  return live<Payment>(snap.docs).sort(bySeconds('created_at'))
+}
+
+/** `month` was added later — fall back to slicing `date` for older records. */
+export function monthOf(p: { month?: string; date?: string }): string {
+  return p.month ?? (p.date ?? '').slice(0, 7)
+}
+
+/**
+ * Records a payment and keeps the linked reservation's paid_amount /
+ * payment_status in sync, atomically — so the accounting totals and the
+ * booking row can never drift apart.
+ */
 export async function createPayment(data: DocumentData) {
-  return addDoc(collection(db, 'payments'), {
+  const paymentRef = doc(collection(db, 'payments'))
+  const amount = toNumber(data.amount)
+  const date = data.date || todayISO()
+  const reservationId: string | null = data.reservation_id || null
+
+  await runTransaction(db, async (tx) => {
+    let reservationUpdate: { ref: ReturnType<typeof doc>; paid: number; total: number } | null = null
+
+    if (reservationId) {
+      const resRef = doc(db, 'reservations', reservationId)
+      const resSnap = await tx.get(resRef)
+      if (resSnap.exists()) {
+        const res = resSnap.data() as Reservation
+        reservationUpdate = {
+          ref: resRef,
+          paid: toNumber(res.paid_amount) + amount,
+          total: toNumber(res.price_at_booking),
+        }
+      }
+    }
+
+    tx.set(paymentRef, {
+      ...data,
+      amount,
+      date,
+      month: monthKey(date),
+      reservation_id: reservationId,
+      created_at: now(),
+      deleted_at: null,
+    })
+
+    if (reservationUpdate) {
+      tx.update(reservationUpdate.ref, {
+        paid_amount: reservationUpdate.paid,
+        payment_status: paymentStatusFor(reservationUpdate.paid, reservationUpdate.total),
+      })
+    }
+  })
+
+  return paymentRef
+}
+
+/** Soft-deletes a payment and rolls its amount back off the reservation. */
+export async function softDeletePayment(id: string) {
+  const paymentRef = doc(db, 'payments', id)
+
+  await runTransaction(db, async (tx) => {
+    const paySnap = await tx.get(paymentRef)
+    if (!paySnap.exists()) throw new Error('Payment not found')
+    const payment = paySnap.data() as Payment
+    if (payment.deleted_at) return // already deleted — nothing to roll back
+
+    let reservationUpdate: { ref: ReturnType<typeof doc>; paid: number; total: number } | null = null
+    if (payment.reservation_id) {
+      const resRef = doc(db, 'reservations', payment.reservation_id)
+      const resSnap = await tx.get(resRef)
+      if (resSnap.exists()) {
+        const res = resSnap.data() as Reservation
+        reservationUpdate = {
+          ref: resRef,
+          paid: Math.max(0, toNumber(res.paid_amount) - toNumber(payment.amount)),
+          total: toNumber(res.price_at_booking),
+        }
+      }
+    }
+
+    tx.update(paymentRef, { deleted_at: now() })
+
+    if (reservationUpdate) {
+      tx.update(reservationUpdate.ref, {
+        paid_amount: reservationUpdate.paid,
+        payment_status: paymentStatusFor(reservationUpdate.paid, reservationUpdate.total),
+      })
+    }
+  })
+}
+
+export function paymentStatusFor(paid: number, total: number): 'unpaid' | 'partial' | 'paid' {
+  if (paid <= 0) return 'unpaid'
+  if (total > 0 && paid < total) return 'partial'
+  return 'paid'
+}
+
+// ─── Expenses (المصاريف) ─────────────────────────────────────────────────────
+
+export async function getExpenses(filters?: { month?: string }): Promise<Expense[]> {
+  const snap = await getDocs(collection(db, 'expenses'))
+  let results = live<Expense>(snap.docs).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+  if (filters?.month) results = results.filter(e => monthOf(e) === filters.month)
+  return results
+}
+
+export async function createExpense(data: DocumentData) {
+  const date = data.date || todayISO()
+  return addDoc(collection(db, 'expenses'), {
     ...data,
+    amount: toNumber(data.amount),
+    date,
+    month: monthKey(date),
     created_at: now(),
     deleted_at: null,
   })
 }
 
-export async function softDeletePayment(id: string) {
-  return updateDoc(doc(db, 'payments', id), { deleted_at: now() })
+export async function updateExpense(id: string, data: Partial<DocumentData>) {
+  const patch: DocumentData = { ...data }
+  if (patch.amount !== undefined) patch.amount = toNumber(patch.amount)
+  if (patch.date) patch.month = monthKey(patch.date as string)
+  return updateDoc(doc(db, 'expenses', id), patch)
 }
 
-// ─── Notifications ────────────────────────────────────────────────────────────
+export async function softDeleteExpense(id: string) {
+  return updateDoc(doc(db, 'expenses', id), { deleted_at: now() })
+}
+
+// ─── Monthly closing (الجرد الشهري) ──────────────────────────────────────────
+
+export async function getMonthlyClosings(): Promise<MonthlyClosing[]> {
+  const snap = await getDocs(collection(db, 'monthly_closings'))
+  return (snap.docs.map(d => ({ id: d.id, ...d.data() })) as MonthlyClosing[])
+    .sort((a, b) => (b.month ?? '').localeCompare(a.month ?? ''))
+}
+
+export async function getMonthlyClosing(month: string): Promise<MonthlyClosing | null> {
+  const snap = await getDoc(doc(db, 'monthly_closings', month))
+  return snap.exists() ? ({ id: snap.id, ...snap.data() } as MonthlyClosing) : null
+}
+
+/** Document ID is the month itself, so closing twice overwrites rather than duplicates. */
+export async function saveMonthlyClosing(month: string, data: DocumentData) {
+  return setDoc(doc(db, 'monthly_closings', month), {
+    ...data,
+    month,
+    closed_at: now(),
+  })
+}
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+
+export async function getClinicSettings() {
+  const snap = await getDoc(doc(db, 'settings', 'clinic'))
+  return snap.exists() ? snap.data() : null
+}
+
+export async function saveClinicSettings(data: DocumentData) {
+  return setDoc(doc(db, 'settings', 'clinic'), data, { merge: true })
+}
+
+// ─── Notifications ───────────────────────────────────────────────────────────
 
 export async function createNotification(data: DocumentData) {
   return addDoc(collection(db, 'notifications'), {

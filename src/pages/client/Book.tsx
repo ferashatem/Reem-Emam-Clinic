@@ -74,10 +74,17 @@ export default function ClientBook() {
     try {
       await createReservation({
         client_id: client.id,
+        // Denormalised so the assistant's list reads without extra lookups
+        client_name: client.name,
+        client_phone: client.phone,
         admin_id: null,
         service_id: selectedService.id,
         service_name: selectedService.name,
-        price_at_booking: selectedService.price,
+        pulses: null,
+        price_per_pulse: null,
+        price_at_booking: selectedService.price ?? 0,
+        paid_amount: 0,
+        payment_status: 'unpaid',
         date: selectedDate,
         time: selectedTime,
         booked_by: 'client',

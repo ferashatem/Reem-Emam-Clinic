@@ -1,137 +1,232 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { getServices, createService, updateService, softDeleteService } from '../../services/firestore'
+import { useLoader, messageFor } from '../../hooks/useLoader'
+import { useConfirm } from '../../components/ui/ConfirmDialog'
 import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
-import { formatPrice } from '../../utils/formatters'
+import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
+import { Field, Input, Textarea, Button } from '../../components/ui/Form'
+import { formatMoney, toNumber } from '../../utils/formatters'
+import { C } from '../../theme'
+import type { Service } from '../../types'
 
 interface ServiceForm {
   name: string
   description: string
-  duration_minutes: number
-  price: number
+  duration_minutes: string
+  price: string
+  price_per_pulse: string
 }
 
 export default function Services() {
-  const [services, setServices] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const { data, loading, error, reload } = useLoader(() => getServices(), [])
+  const services = data ?? []
+  const { confirm, dialog } = useConfirm()
+
   const [modalOpen, setModalOpen] = useState(false)
-  const [editTarget, setEditTarget] = useState<any | null>(null)
+  const [editTarget, setEditTarget] = useState<Service | null>(null)
   const [saving, setSaving] = useState(false)
   const { register, handleSubmit, reset, formState: { errors } } = useForm<ServiceForm>()
 
-  async function load() {
-    setLoading(true)
-    try { setServices(await getServices()) } catch { toast.error('Error loading services') }
-    setLoading(false)
+  function openCreate() {
+    setEditTarget(null)
+    reset({ name: '', description: '', duration_minutes: '', price: '', price_per_pulse: '' })
+    setModalOpen(true)
   }
-  useEffect(() => { load() }, [])
 
-  function openCreate() { setEditTarget(null); reset({}); setModalOpen(true) }
-  function openEdit(s: any) { setEditTarget(s); reset(s); setModalOpen(true) }
+  function openEdit(s: Service) {
+    setEditTarget(s)
+    reset({
+      name: s.name ?? '',
+      description: s.description ?? '',
+      duration_minutes: s.duration_minutes != null ? String(s.duration_minutes) : '',
+      price: String(toNumber(s.price)),
+      price_per_pulse: toNumber(s.price_per_pulse) > 0 ? String(s.price_per_pulse) : '',
+    })
+    setModalOpen(true)
+  }
 
-  async function onSubmit(data: ServiceForm) {
+  async function onSubmit(values: ServiceForm) {
     setSaving(true)
     try {
-      const payload = { ...data, duration_minutes: Number(data.duration_minutes), price: Number(data.price) }
+      const payload = {
+        name: values.name.trim(),
+        description: values.description?.trim() ?? '',
+        duration_minutes: toNumber(values.duration_minutes),
+        price: toNumber(values.price),
+        // Empty = flat-price service; the booking form then ignores pulses for pricing.
+        price_per_pulse: values.price_per_pulse ? toNumber(values.price_per_pulse) : null,
+      }
       if (editTarget) {
         await updateService(editTarget.id, payload)
-        toast.success('Service updated')
+        toast.success('تم تعديل الخدمة')
       } else {
         await createService(payload)
-        toast.success('Service added')
+        toast.success('تم إضافة الخدمة')
       }
       setModalOpen(false)
-      load()
-    } catch {
-      toast.error('An error occurred')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleToggleActive(s: any) {
-    await updateService(s.id, { is_active: !s.is_active })
-    toast.success(s.is_active ? 'Service disabled' : 'Service enabled')
-    load()
+  async function handleToggleActive(s: Service) {
+    try {
+      await updateService(s.id, { is_active: !s.is_active })
+      toast.success(s.is_active ? 'تم إخفاء الخدمة' : 'تم تفعيل الخدمة')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
+    }
   }
 
-  async function handleDelete(s: any) {
-    if (!confirm(`Delete service "${s.name}"?`)) return
-    await softDeleteService(s.id)
-    toast.success('Service deleted')
-    load()
+  async function handleDelete(s: Service) {
+    const ok = await confirm({
+      title: 'مسح الخدمة',
+      message: `هتمسحي خدمة "${s.name}"؟ الحجوزات القديمة هتفضل زي ما هي.`,
+      confirmLabel: 'مسح',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await softDeleteService(s.id)
+      toast.success('تم المسح')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
+    }
   }
+
+  const addButton = <Button className="w-full sm:w-auto" onClick={openCreate}>+ إضافة خدمة</Button>
 
   return (
     <div>
-      <PageHeader
-        title="Services"
-        subtitle="Manage clinic services"
-        action={<button onClick={openCreate} className="px-5 py-2.5 rounded-xl text-white text-sm font-medium" style={{ backgroundColor: '#8B3A52' }}>+ Add Service</button>}
-      />
+      <PageHeader title="الخدمات" subtitle={`${services.length} خدمة`} action={addButton} />
 
       {loading ? (
-        <div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 rounded-full border-4 border-[#8B3A52] border-t-transparent" /></div>
+        <LoadingBlock />
+      ) : error ? (
+        <ErrorState message={error} onRetry={reload} />
       ) : services.length === 0 ? (
-        <EmptyState icon="✨" title="No services yet" description="Add your first service" action={<button onClick={openCreate} className="px-5 py-2.5 rounded-xl text-white text-sm font-medium" style={{ backgroundColor: '#8B3A52' }}>+ Add Service</button>} />
+        <EmptyState icon="✨" title="مفيش خدمات لسه" description="ضيفي أول خدمة عشان تظهر في الحجز وفي الموقع" action={addButton} />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {services.map(s => (
-            <div key={s.id} className="bg-white rounded-2xl p-6 shadow-sm border" style={{ borderColor: '#F2C4CE' }}>
-              <div className="flex items-start justify-between mb-3">
-                <h3 className="font-semibold text-base" style={{ color: '#2C1A1D' }}>{s.name}</h3>
-                <span className={`text-xs px-2 py-1 rounded-full ${s.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {s.is_active ? 'Active' : 'Disabled'}
-                </span>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {services.map(s => {
+            const perPulse = toNumber(s.price_per_pulse)
+            return (
+              <div key={s.id} className="bg-white rounded-2xl p-5 shadow-sm border flex flex-col" style={{ borderColor: C.primarySoft }}>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <h3 className="font-semibold text-base" style={{ color: C.text }}>{s.name}</h3>
+                  <span className={`text-xs px-2 py-1 rounded-full shrink-0 ${s.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {s.is_active ? 'مفعّلة' : 'مخفية'}
+                  </span>
+                </div>
+
+                {s.description && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{s.description}</p>}
+
+                <div className="flex items-end justify-between mb-4 mt-auto">
+                  <div>
+                    {perPulse > 0 ? (
+                      <>
+                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(perPulse)}</p>
+                        <p className="text-xs text-gray-400">للنبضة الواحدة</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(s.price)}</p>
+                        <p className="text-xs text-gray-400">سعر ثابت</p>
+                      </>
+                    )}
+                  </div>
+                  {!!s.duration_minutes && (
+                    <span className="text-xs text-gray-400">{s.duration_minutes} دقيقة</span>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(s)}>تعديل</Button>
+                  <Button
+                    size="sm" variant="outline" className="flex-1"
+                    onClick={() => handleToggleActive(s)}
+                    style={s.is_active
+                      ? { borderColor: '#FED7AA', color: '#C2410C' }
+                      : { borderColor: '#BBF7D0', color: '#15803D' }}
+                  >
+                    {s.is_active ? 'إخفاء' : 'تفعيل'}
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => handleDelete(s)}
+                    style={{ borderColor: '#FECACA', color: C.red }}
+                  >
+                    مسح
+                  </Button>
+                </div>
               </div>
-              <p className="text-sm text-gray-500 mb-4 line-clamp-2">{s.description}</p>
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-lg font-bold" style={{ color: '#8B3A52' }}>{formatPrice(s.price)}</span>
-                <span className="text-xs text-gray-400">{s.duration_minutes} min</span>
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => openEdit(s)} className="flex-1 text-xs py-2 rounded-lg border" style={{ borderColor: '#F2C4CE', color: '#8B3A52' }}>Edit</button>
-                <button onClick={() => handleToggleActive(s)} className={`flex-1 text-xs py-2 rounded-lg border ${s.is_active ? 'text-orange-600 border-orange-200' : 'text-green-600 border-green-200'}`}>
-                  {s.is_active ? 'Disable' : 'Enable'}
-                </button>
-                <button onClick={() => handleDelete(s)} className="text-xs py-2 px-3 rounded-lg border text-red-500 border-red-200">Delete</button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'Edit Service' : 'Add New Service'}>
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'تعديل خدمة' : 'إضافة خدمة'}>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Service Name</label>
-            <input {...register('name', { required: true })} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.name ? '#ef4444' : '#F2C4CE' }} />
+          <Field label="اسم الخدمة" required error={errors.name?.message}>
+            <Input {...register('name', { required: 'اكتبي اسم الخدمة' })} invalid={!!errors.name} placeholder="مثال: ليزر وش" />
+          </Field>
+
+          <Field label="الوصف">
+            <Textarea {...register('description')} rows={2} placeholder="بيظهر للعملاء في الموقع" />
+          </Field>
+
+          <Field
+            label="سعر النبضة (جنيه)"
+            error={errors.price_per_pulse?.message}
+            hint="سيبيه فاضي لو الخدمة بسعر ثابت مش بالنبضة"
+          >
+            <Input
+              {...register('price_per_pulse', {
+                validate: v => !v || toNumber(v) > 0 || 'السعر لازم يكون أكبر من صفر',
+              })}
+              invalid={!!errors.price_per_pulse}
+              type="number" inputMode="numeric" min={0} dir="ltr" placeholder="مثال: 15"
+            />
+          </Field>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field
+              label="السعر الثابت (جنيه)"
+              required
+              error={errors.price?.message}
+              hint="بيُستخدم لو مفيش سعر نبضة، وبيظهر في الموقع"
+            >
+              <Input
+                {...register('price', {
+                  required: 'اكتبي السعر',
+                  min: { value: 0, message: 'السعر لازم يكون موجب' },
+                })}
+                invalid={!!errors.price}
+                type="number" inputMode="numeric" min={0} dir="ltr"
+              />
+            </Field>
+            <Field label="المدة (دقيقة)" error={errors.duration_minutes?.message}>
+              <Input {...register('duration_minutes')} type="number" inputMode="numeric" min={0} dir="ltr" />
+            </Field>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Description</label>
-            <textarea {...register('description')} rows={3} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52] resize-none" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1.5">Duration (min)</label>
-              <input {...register('duration_minutes', { required: true, min: 1 })} type="number" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.duration_minutes ? '#ef4444' : '#F2C4CE' }} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1.5">Price (EGP)</label>
-              <input {...register('price', { required: true, min: 0 })} type="number" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.price ? '#ef4444' : '#F2C4CE' }} />
-            </div>
-          </div>
-          <div className="flex gap-3 pt-2">
-            <button type="submit" disabled={saving} className="flex-1 py-2.5 rounded-xl text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#8B3A52' }}>
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-            <button type="button" onClick={() => setModalOpen(false)} className="flex-1 py-2.5 rounded-xl border font-medium" style={{ borderColor: '#F2C4CE', color: '#8B3A52' }}>Cancel</button>
+
+          <div className="flex gap-3 pt-1">
+            <Button type="submit" loading={saving} className="flex-1">حفظ</Button>
+            <Button type="button" variant="outline" className="flex-1" onClick={() => setModalOpen(false)}>رجوع</Button>
           </div>
         </form>
       </Modal>
+
+      {dialog}
     </div>
   )
 }

@@ -15,29 +15,28 @@ import ServicesPage from './pages/public/ServicesPage'
 // Login
 import LoginPage from './pages/login/LoginPage'
 
-// Super Admin pages
-import SuperAdminDashboard from './pages/super-admin/Dashboard'
-import Admins from './pages/super-admin/Admins'
-import Services from './pages/super-admin/Services'
-import SuperAdminClients from './pages/super-admin/Clients'
-import SuperAdminReservations from './pages/super-admin/Reservations'
-import Reports from './pages/super-admin/Reports'
-import Reviews from './pages/super-admin/Reviews'
-import Settings from './pages/super-admin/Settings'
-import ContactRequests from './pages/super-admin/ContactRequests'
+// Shared internal pages — same screens for the partners and the assistant
+import Dashboard from './pages/shared/Dashboard'
+import Reservations from './pages/shared/Reservations'
+import Patients from './pages/shared/Patients'
+import PatientFile from './pages/shared/PatientFile'
+import Accounting from './pages/shared/Accounting'
 
-// Admin pages
-import AdminDashboard from './pages/admin/Dashboard'
-import Clients from './pages/admin/Clients'
-import AdminReservations from './pages/admin/Reservations'
+// Staff pages
+import StaffPayments from './pages/staff/Payments'
+
+// Admin-only pages
 import Timetable from './pages/admin/Timetable'
 import SessionReports from './pages/admin/SessionReports'
 import WhatsApp from './pages/admin/WhatsApp'
 
-// Staff pages
-import StaffReservations from './pages/staff/Reservations'
-import StaffClients from './pages/staff/Clients'
-import StaffCollections from './pages/staff/Collections'
+// Super admin pages
+import Admins from './pages/super-admin/Admins'
+import Services from './pages/super-admin/Services'
+import Reports from './pages/super-admin/Reports'
+import Reviews from './pages/super-admin/Reviews'
+import Settings from './pages/super-admin/Settings'
+import ContactRequests from './pages/super-admin/ContactRequests'
 
 // Client pages
 import ClientOnboarding from './pages/client/Onboarding'
@@ -101,18 +100,23 @@ export default function App() {
               }
             >
               <Route index element={<Navigate to="dashboard" replace />} />
-              <Route path="dashboard" element={<SuperAdminDashboard />} />
+              <Route path="dashboard" element={<Dashboard />} />
+              <Route path="reservations" element={<Reservations />} />
+              <Route path="patients" element={<Patients />} />
+              <Route path="patients/:clientId" element={<PatientFile />} />
+              <Route path="accounting" element={<Accounting />} />
               <Route path="admins" element={<Admins />} />
-              <Route path="clients" element={<SuperAdminClients />} />
               <Route path="services" element={<Services />} />
-              <Route path="reservations" element={<SuperAdminReservations />} />
               <Route path="reports" element={<Reports />} />
               <Route path="reviews" element={<Reviews />} />
               <Route path="contact-requests" element={<ContactRequests />} />
               <Route path="settings" element={<Settings />} />
+              {/* Old links kept working */}
+              <Route path="clients" element={<Navigate to="/super-admin/patients" replace />} />
+              <Route path="*" element={<Navigate to="/super-admin/dashboard" replace />} />
             </Route>
 
-            {/* Admin */}
+            {/* Admin — Reem & Rania, the partners */}
             <Route
               path="/admin"
               element={
@@ -122,15 +126,19 @@ export default function App() {
               }
             >
               <Route index element={<Navigate to="dashboard" replace />} />
-              <Route path="dashboard" element={<AdminDashboard />} />
-              <Route path="clients" element={<Clients />} />
-              <Route path="reservations" element={<AdminReservations />} />
-              <Route path="timetable" element={<Timetable />} />
+              <Route path="dashboard" element={<Dashboard />} />
+              <Route path="reservations" element={<Reservations />} />
+              <Route path="patients" element={<Patients />} />
+              <Route path="patients/:clientId" element={<PatientFile />} />
+              <Route path="accounting" element={<Accounting />} />
               <Route path="session-reports" element={<SessionReports />} />
+              <Route path="timetable" element={<Timetable />} />
               <Route path="whatsapp" element={<WhatsApp />} />
+              <Route path="clients" element={<Navigate to="/admin/patients" replace />} />
+              <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />
             </Route>
 
-            {/* Staff */}
+            {/* Staff — the assistant */}
             <Route
               path="/staff"
               element={
@@ -140,9 +148,11 @@ export default function App() {
               }
             >
               <Route index element={<Navigate to="reservations" replace />} />
-              <Route path="reservations" element={<StaffReservations />} />
-              <Route path="clients" element={<StaffClients />} />
-              <Route path="collections" element={<StaffCollections />} />
+              <Route path="reservations" element={<Reservations />} />
+              <Route path="payments" element={<StaffPayments />} />
+              {/* Old links kept working */}
+              <Route path="collections" element={<Navigate to="/staff/payments" replace />} />
+              <Route path="*" element={<Navigate to="/staff/reservations" replace />} />
             </Route>
 
             {/* Fallback */}

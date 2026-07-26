@@ -57,9 +57,9 @@ service cloud.firestore {
       allow create, update, delete: if isSuperAdmin();
     }
 
-    // Settings — super admin write, admins read
+    // Settings — super admin write, whole team reads (partner names, clinic info)
     match /settings/{docId} {
-      allow read: if isAdminOrSuperAdmin();
+      allow read: if isTeam();
       allow write: if isSuperAdmin();
     }
 
@@ -83,14 +83,15 @@ service cloud.firestore {
         (isAuth() && resource.data.uid == request.auth.uid) ||
         (isAuth() && resource.data.phone == request.auth.token.phone_number);
       // Allow uid linking on first phone login (only uid field can be changed by client)
-      allow update: if isAdminOrSuperAdmin() ||
+      allow update: if isTeam() ||
         (isAuth() &&
          resource.data.uid == null &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid']) &&
          request.resource.data.uid == request.auth.uid) ||
         // Client updating their own doc (uid as document ID)
         (isAuth() && clientId == request.auth.uid);
-      allow create: if isAdminOrSuperAdmin() ||
+      // Staff (reception) registers walk-in patients while booking for them
+      allow create: if isTeam() ||
         (isAuth() &&
          request.resource.data.uid == request.auth.uid &&
          request.resource.data.phone == request.auth.token.phone_number) ||
@@ -101,18 +102,15 @@ service cloud.firestore {
 
     // Reservations collection
     match /reservations/{reservationId} {
-      allow read: if isSuperAdmin() ||
-        (isAdmin() && resource.data.admin_id == request.auth.uid) ||
-        (isAdmin() && resource.data.admin_id == null) ||
+      // The partners and the assistant all work off the same schedule
+      allow read: if isTeam() ||
         isClientOwnerOf(resource.data.client_id) ||
-        // Any authenticated user can read date/time fields to check availability
+        // Any authenticated user can read date/time to check slot availability
         isAuth();
 
       allow create: if
-        // Admin creates confirmed booking for a client
-        (isAdmin() && request.resource.data.admin_id == request.auth.uid) ||
-        // Staff (reception) creates a booking they own
-        (isStaff() && request.resource.data.admin_id == request.auth.uid) ||
+        // Any team member booking on a client's behalf, tagged with who did it
+        (isTeam() && request.resource.data.admin_id == request.auth.uid) ||
         // Client creates pending booking (client_id must be their own doc)
         (isAuth() &&
          request.resource.data.booked_by == 'client' &&
@@ -120,10 +118,8 @@ service cloud.firestore {
          request.resource.data.admin_id == null &&
          isClientOwnerOf(request.resource.data.client_id));
 
-      allow update: if isSuperAdmin() ||
-        (isAdmin() && (resource.data.admin_id == request.auth.uid || resource.data.admin_id == null)) ||
-        // Staff can edit bookings and confirm client requests
-        isStaff() ||
+      // Team members edit bookings, confirm requests, and settle payments on them
+      allow update: if isTeam() ||
         // Client can mark reservation as reviewed
         (isClientOwnerOf(resource.data.client_id) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewed']));
@@ -140,15 +136,11 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    // Session reports
+    // Session reports — both partners share the full patient file
     match /session_reports/{reportId} {
-      allow read: if isSuperAdmin() ||
-        (isAdmin() && resource.data.admin_id == request.auth.uid) ||
+      allow read: if isAdminOrSuperAdmin() ||
         isClientOwnerOf(resource.data.client_id);
-      allow create: if isSuperAdmin() ||
-        (isAdmin() && request.resource.data.admin_id == request.auth.uid);
-      allow update: if isSuperAdmin() ||
-        (isAdmin() && resource.data.admin_id == request.auth.uid);
+      allow create, update: if isAdminOrSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
@@ -169,6 +161,23 @@ service cloud.firestore {
       // Staff can soft-delete their own records; super admin can edit any
       allow update: if isSuperAdmin() ||
         (isStaff() && resource.data.staff_id == request.auth.uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // Expenses (المصاريف) — only the partners touch the books
+    match /expenses/{expenseId} {
+      allow read: if isAdminOrSuperAdmin();
+      allow create: if isAdminOrSuperAdmin() &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0;
+      allow update: if isAdminOrSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Monthly closing (الجرد الشهري) — snapshot of a month's numbers
+    match /monthly_closings/{month} {
+      allow read: if isAdminOrSuperAdmin();
+      allow create, update: if isAdminOrSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 

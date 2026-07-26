@@ -44,10 +44,11 @@ export default function SessionReports() {
   async function load() {
     if (!userProfile) return
     setLoading(true)
+    // Both partners share one patient file — neither filters by who wrote what.
     const [reps, cls, res] = await Promise.all([
-      getSessionReports({ adminId: userProfile.uid }),
+      getSessionReports(),
       getClients(),
-      getReservations({ adminId: userProfile.uid }),
+      getReservations(),
     ])
     setReports(reps as any[])
     setClients(cls as any[])

@@ -1,9 +1,12 @@
 import { useState, useEffect } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useFieldArray } from 'react-hook-form'
 import toast from 'react-hot-toast'
-import { doc, getDoc, setDoc } from 'firebase/firestore'
-import { db } from '../../services/firebase'
+import { getClinicSettings, saveClinicSettings } from '../../services/firestore'
+import { useLoader, messageFor } from '../../hooks/useLoader'
 import PageHeader from '../../components/ui/PageHeader'
+import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
+import { Field, Input, Button } from '../../components/ui/Form'
+import { C } from '../../theme'
 
 interface ClinicForm {
   name: string
@@ -11,79 +14,109 @@ interface ClinicForm {
   address: string
   workingHours: string
   googleReviewLink: string
+  partners: { name: string }[]
 }
 
-const SETTINGS_DOC = doc(db, 'settings', 'clinic')
+const defaults: ClinicForm = {
+  name: 'ريم غلو هاوس',
+  phone: '+201000000000',
+  address: 'القاهرة، مصر',
+  workingHours: '9 ص - 9 م',
+  googleReviewLink: '',
+  partners: [{ name: 'ريم' }, { name: 'رانيا' }],
+}
 
 export default function Settings() {
   const [saving, setSaving] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const { register, handleSubmit, reset } = useForm<ClinicForm>({
-    defaultValues: {
-      name: 'ريم غلو هاوس',
-      phone: '+201000000000',
-      address: 'القاهرة، مصر',
-      workingHours: '9 ص - 9 م',
-      googleReviewLink: '',
-    }
-  })
+  const { data, loading, error, reload } = useLoader(() => getClinicSettings(), [])
+
+  const { register, handleSubmit, reset, control } = useForm<ClinicForm>({ defaultValues: defaults })
+  const { fields, append, remove } = useFieldArray({ control, name: 'partners' })
 
   useEffect(() => {
-    getDoc(SETTINGS_DOC).then(snap => {
-      if (snap.exists()) reset(snap.data() as ClinicForm)
-    }).finally(() => setLoading(false))
-  }, [reset])
+    if (!data) return
+    const stored = Array.isArray(data.partners) ? (data.partners as string[]) : null
+    reset({
+      ...defaults,
+      ...data,
+      partners: stored?.length ? stored.map(name => ({ name })) : defaults.partners,
+    } as ClinicForm)
+  }, [data, reset])
 
-  async function onSubmit(data: ClinicForm) {
+  async function onSubmit(values: ClinicForm) {
+    const partners = values.partners.map(p => p.name.trim()).filter(Boolean)
+    if (partners.length === 0) {
+      toast.error('لازم اسم شريكة واحدة على الأقل')
+      return
+    }
     setSaving(true)
     try {
-      await setDoc(SETTINGS_DOC, data)
+      await saveClinicSettings({
+        name: values.name,
+        phone: values.phone,
+        address: values.address,
+        workingHours: values.workingHours,
+        googleReviewLink: values.googleReviewLink,
+        partners,
+      })
       toast.success('تم حفظ الإعدادات')
-    } catch {
-      toast.error('حدث خطأ أثناء الحفظ')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
     } finally {
       setSaving(false)
     }
   }
 
-  if (loading) return <div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 rounded-full border-4 border-[#8B3A52] border-t-transparent" /></div>
+  if (loading) return <LoadingBlock />
+  if (error) return <ErrorState message={error} onRetry={reload} />
 
   return (
     <div>
-      <PageHeader title="إعدادات العيادة" subtitle="البيانات الأساسية للعيادة" />
+      <PageHeader title="إعدادات العيادة" subtitle="البيانات الأساسية وتوزيع الأرباح" />
 
-      <div className="max-w-xl bg-white rounded-2xl p-8 shadow-sm border" style={{ borderColor: '#F2C4CE' }}>
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+      <form onSubmit={handleSubmit(onSubmit)} className="max-w-2xl space-y-5">
+        <section className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border space-y-4" style={{ borderColor: C.primarySoft }}>
+          <h2 className="text-sm font-bold" style={{ color: C.primary }}>بيانات العيادة</h2>
+          <Field label="اسم العيادة"><Input {...register('name')} /></Field>
+          <Field label="رقم التليفون"><Input {...register('phone')} dir="ltr" /></Field>
+          <Field label="العنوان"><Input {...register('address')} /></Field>
+          <Field label="مواعيد العمل"><Input {...register('workingHours')} /></Field>
+          <Field label="لينك تقييم جوجل"><Input {...register('googleReviewLink')} dir="ltr" placeholder="https://g.page/r/..." /></Field>
+        </section>
+
+        <section className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border space-y-4" style={{ borderColor: C.primarySoft }}>
           <div>
-            <label className="block text-sm font-medium mb-1.5">Clinic Name</label>
-            <input {...register('name')} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
+            <h2 className="text-sm font-bold" style={{ color: C.primary }}>الشريكات</h2>
+            <p className="text-xs text-gray-400 mt-1">
+              صافي ربح كل شهر بيتقسم بالتساوي على الأسماء دي في صفحة الحسابات
+            </p>
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Phone Number</label>
-            <input {...register('phone')} dir="ltr" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
+
+          <div className="space-y-3">
+            {fields.map((field, i) => (
+              <div key={field.id} className="flex gap-2">
+                <Input {...register(`partners.${i}.name` as const)} placeholder={`اسم الشريكة ${i + 1}`} />
+                {fields.length > 1 && (
+                  <Button
+                    type="button" variant="outline"
+                    onClick={() => remove(i)}
+                    style={{ borderColor: '#FECACA', color: C.red }}
+                  >
+                    مسح
+                  </Button>
+                )}
+              </div>
+            ))}
           </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Address</label>
-            <input {...register('address')} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Working Hours</label>
-            <input {...register('workingHours')} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Google Review Link</label>
-            <input {...register('googleReviewLink')} dir="ltr" placeholder="https://g.page/r/..." className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-          <button
-            type="submit"
-            disabled={saving}
-            className="w-full py-3 rounded-xl text-white font-medium disabled:opacity-50"
-            style={{ backgroundColor: '#8B3A52' }}
-          >
-            {saving ? 'جارٍ الحفظ...' : 'حفظ الإعدادات'}
-          </button>
-        </form>
-      </div>
+
+          <Button type="button" variant="outline" onClick={() => append({ name: '' })}>
+            + إضافة شريكة
+          </Button>
+        </section>
+
+        <Button type="submit" loading={saving} className="w-full sm:w-auto">حفظ الإعدادات</Button>
+      </form>
     </div>
   )
 }

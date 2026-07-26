@@ -145,9 +145,16 @@ export default function PublicBookingModal({ service, onClose }: Props) {
       // Create reservation
       await createReservation({
         client_id: clientId,
+        // Denormalised so the assistant's list reads without extra lookups
+        client_name: name.trim(),
+        client_phone: normalized,
         service_id: service?.id ?? null,
         service_name: service?.name ?? null,
-        price_at_booking: service?.price ?? null,
+        pulses: null,
+        price_per_pulse: null,
+        price_at_booking: service?.price ?? 0,
+        paid_amount: 0,
+        payment_status: 'unpaid',
         date,
         time,
         notes: notes.trim() || null,
