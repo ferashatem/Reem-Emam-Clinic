@@ -4,6 +4,7 @@ import AppShell from './AppShell'
 const links = [
   { to: '/admin/dashboard', label: 'الرئيسية', icon: '🏠' },
   { to: '/admin/reservations', label: 'الحجوزات', icon: '📅' },
+  { to: '/admin/payments', label: 'الدفع', icon: '💵' },
   { to: '/admin/patients', label: 'المرضى', icon: '👤' },
   { to: '/admin/accounting', label: 'الحسابات', icon: '💰' },
   { to: '/admin/session-reports', label: 'تقارير الجلسات', icon: '📋' },

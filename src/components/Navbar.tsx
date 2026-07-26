@@ -30,7 +30,6 @@ export default function Navbar() {
       </ul>
 
       <div className="nav__end">
-        <Link to="/login" className="nav__login">{tr.nav.login}</Link>
         <button className="lang" onClick={toggle} aria-label="Switch language">
           {lang === 'ar' ? 'EN' : 'عر'}
         </button>

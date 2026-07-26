@@ -74,11 +74,12 @@ export default function StaffReservations() {
     [services]
   )
 
+  // Website requests carry the name/phone but no client_id until they're confirmed
   function nameOf(r: Reservation) {
-    return r.client_name || clientMap[r.client_id]?.name || 'عميلة محذوفة'
+    return r.client_name || (r.client_id ? clientMap[r.client_id]?.name : '') || 'بدون اسم'
   }
   function phoneOf(r: Reservation) {
-    return r.client_phone || clientMap[r.client_id]?.phone || ''
+    return r.client_phone || (r.client_id ? clientMap[r.client_id]?.phone : '') || ''
   }
   function serviceOf(r: Reservation) {
     return r.service_name || serviceMap[r.service_id]?.name || '—'
@@ -137,6 +138,51 @@ export default function StaffReservations() {
     try {
       await updateReservation(r.id, changes)
       toast.success(successMsg)
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  /**
+   * Confirming a website request also turns the visitor into a patient:
+   * requests arrive with a name + phone but no `client_id`, so we match on the
+   * phone (reusing an existing file) or open a new one, then link them.
+   */
+  async function handleConfirm(r: Reservation) {
+    setBusyId(r.id)
+    try {
+      const changes: Partial<Reservation> = {
+        status: 'confirmed',
+        admin_id: userProfile?.uid ?? null,
+      }
+
+      if (!r.client_id) {
+        const phone = r.client_phone ? normalizePhone(r.client_phone) : ''
+        if (!phone) throw new Error('الطلب ده مفيهوش رقم تليفون — عدّليه الأول')
+
+        let client = await getClientByPhone(phone) as Client | null
+        if (client) {
+          toast('العميلة دي عندها ملف قديم — تم الربط بيه', { icon: 'ℹ️' })
+        } else {
+          const ref = await createClient({
+            name: r.client_name?.trim() || phone,
+            phone,
+            source: 'website',
+            uid: null,
+          })
+          client = { id: ref.id, name: r.client_name ?? '', phone } as Client
+        }
+
+        changes.client_id = client.id
+        changes.client_name = client.name ?? r.client_name ?? ''
+        changes.client_phone = client.phone ?? phone
+      }
+
+      await updateReservation(r.id, changes)
+      toast.success('تم تأكيد الحجز ✅')
       reload()
     } catch (err) {
       toast.error(messageFor(err))
@@ -378,7 +424,7 @@ export default function StaffReservations() {
                 service={serviceOf(r)}
                 busy={busyId === r.id}
                 waHref={waLink(r)}
-                onConfirm={() => patch(r, { status: 'confirmed' }, 'تم تأكيد الحجز')}
+                onConfirm={() => handleConfirm(r)}
                 onComplete={() => patch(r, { status: 'completed' }, 'تم تسجيل الجلسة كمنتهية')}
                 onCancel={() => handleCancel(r)}
                 onEdit={() => openEdit(r)}
@@ -417,7 +463,7 @@ export default function StaffReservations() {
                           r={r}
                           busy={busyId === r.id}
                           waHref={waLink(r)}
-                          onConfirm={() => patch(r, { status: 'confirmed' }, 'تم تأكيد الحجز')}
+                          onConfirm={() => handleConfirm(r)}
                           onComplete={() => patch(r, { status: 'completed' }, 'تم تسجيل الجلسة كمنتهية')}
                           onCancel={() => handleCancel(r)}
                           onEdit={() => openEdit(r)}
@@ -536,7 +582,12 @@ export default function StaffReservations() {
             <Select
               {...register('service_id', {
                 required: 'اختاري الخدمة',
-                onChange: () => setPriceTouched(false),
+                onChange: e => {
+                  setPriceTouched(false)
+                  // Start from the service's usual pulse count; the assistant edits it if the session ran longer.
+                  const next = toNumber(serviceMap[e.target.value]?.default_pulses)
+                  setValue('pulses', next > 0 ? String(next) : '')
+                },
               })}
               invalid={!!errors.service_id}
             >
@@ -560,6 +611,9 @@ export default function StaffReservations() {
               <Input
                 {...register('pulses', {
                   min: { value: 0, message: 'العدد لازم يكون موجب' },
+                  // Changing the count re-opens auto-pricing, even while editing
+                  // a booking whose price was already locked.
+                  onChange: () => setPriceTouched(false),
                 })}
                 invalid={!!errors.pulses}
                 type="number"

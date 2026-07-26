@@ -26,7 +26,8 @@ export default function Patients() {
     if (!data) return []
     const visitsBy = new Map<string, { visits: number; last: string; billed: number }>()
     for (const r of data.reservations) {
-      if (r.status === 'cancelled') continue
+      // Unconfirmed website requests have no patient file yet
+      if (!r.client_id || r.status === 'cancelled') continue
       const entry = visitsBy.get(r.client_id) ?? { visits: 0, last: '', billed: 0 }
       entry.visits += 1
       entry.billed += toNumber(r.price_at_booking)

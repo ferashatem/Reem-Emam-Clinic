@@ -18,7 +18,13 @@ interface ServiceForm {
   description: string
   duration_minutes: string
   price: string
-  price_per_pulse: string
+  default_pulses: string
+}
+
+/** Per-pulse rate the clinic charges: the session price split over its pulses. */
+function perPulseOf(price: number, pulses: number): number | null {
+  if (!(price > 0) || !(pulses > 0)) return null
+  return Math.round((price / pulses) * 100) / 100
 }
 
 export default function Services() {
@@ -29,11 +35,14 @@ export default function Services() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Service | null>(null)
   const [saving, setSaving] = useState(false)
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<ServiceForm>()
+  const { register, handleSubmit, reset, watch, formState: { errors } } = useForm<ServiceForm>()
+
+  // Live preview of the rate the assistant will see in the booking form.
+  const previewPerPulse = perPulseOf(toNumber(watch('price')), toNumber(watch('default_pulses')))
 
   function openCreate() {
     setEditTarget(null)
-    reset({ name: '', description: '', duration_minutes: '', price: '', price_per_pulse: '' })
+    reset({ name: '', description: '', duration_minutes: '', price: '', default_pulses: '' })
     setModalOpen(true)
   }
 
@@ -44,7 +53,7 @@ export default function Services() {
       description: s.description ?? '',
       duration_minutes: s.duration_minutes != null ? String(s.duration_minutes) : '',
       price: String(toNumber(s.price)),
-      price_per_pulse: toNumber(s.price_per_pulse) > 0 ? String(s.price_per_pulse) : '',
+      default_pulses: toNumber(s.default_pulses) > 0 ? String(s.default_pulses) : '',
     })
     setModalOpen(true)
   }
@@ -52,13 +61,16 @@ export default function Services() {
   async function onSubmit(values: ServiceForm) {
     setSaving(true)
     try {
+      const price = toNumber(values.price)
+      const pulses = values.default_pulses ? toNumber(values.default_pulses) : null
       const payload = {
         name: values.name.trim(),
         description: values.description?.trim() ?? '',
         duration_minutes: toNumber(values.duration_minutes),
-        price: toNumber(values.price),
-        // Empty = flat-price service; the booking form then ignores pulses for pricing.
-        price_per_pulse: values.price_per_pulse ? toNumber(values.price_per_pulse) : null,
+        price,
+        default_pulses: pulses,
+        // No pulses = flat-price service; the booking form then ignores pulses for pricing.
+        price_per_pulse: pulses ? perPulseOf(price, pulses) : null,
       }
       if (editTarget) {
         await updateService(editTarget.id, payload)
@@ -132,17 +144,12 @@ export default function Services() {
 
                 <div className="flex items-end justify-between mb-4 mt-auto">
                   <div>
-                    {perPulse > 0 ? (
-                      <>
-                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(perPulse)}</p>
-                        <p className="text-xs text-gray-400">للنبضة الواحدة</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(s.price)}</p>
-                        <p className="text-xs text-gray-400">سعر ثابت</p>
-                      </>
-                    )}
+                    <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(s.price)}</p>
+                    <p className="text-xs text-gray-400">
+                      {perPulse > 0
+                        ? `${s.default_pulses} نبضة · ${formatMoney(perPulse)} للنبضة`
+                        : 'سعر ثابت'}
+                    </p>
                   </div>
                   {!!s.duration_minutes && (
                     <span className="text-xs text-gray-400">{s.duration_minutes} دقيقة</span>
@@ -184,26 +191,12 @@ export default function Services() {
             <Textarea {...register('description')} rows={2} placeholder="بيظهر للعملاء في الموقع" />
           </Field>
 
-          <Field
-            label="سعر النبضة (جنيه)"
-            error={errors.price_per_pulse?.message}
-            hint="سيبيه فاضي لو الخدمة بسعر ثابت مش بالنبضة"
-          >
-            <Input
-              {...register('price_per_pulse', {
-                validate: v => !v || toNumber(v) > 0 || 'السعر لازم يكون أكبر من صفر',
-              })}
-              invalid={!!errors.price_per_pulse}
-              type="number" inputMode="numeric" min={0} dir="ltr" placeholder="مثال: 15"
-            />
-          </Field>
-
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field
-              label="السعر الثابت (جنيه)"
+              label="سعر الجلسة (جنيه)"
               required
               error={errors.price?.message}
-              hint="بيُستخدم لو مفيش سعر نبضة، وبيظهر في الموقع"
+              hint="بيظهر للعملاء في الموقع"
             >
               <Input
                 {...register('price', {
@@ -214,10 +207,34 @@ export default function Services() {
                 type="number" inputMode="numeric" min={0} dir="ltr"
               />
             </Field>
-            <Field label="المدة (دقيقة)" error={errors.duration_minutes?.message}>
-              <Input {...register('duration_minutes')} type="number" inputMode="numeric" min={0} dir="ltr" />
+            <Field
+              label="عدد النبضات"
+              error={errors.default_pulses?.message}
+              hint="سيبيه فاضي لو الخدمة مش بالنبضة"
+            >
+              <Input
+                {...register('default_pulses', {
+                  validate: v => !v || toNumber(v) > 0 || 'العدد لازم يكون أكبر من صفر',
+                })}
+                invalid={!!errors.default_pulses}
+                type="number" inputMode="numeric" min={0} dir="ltr" placeholder="مثال: 200"
+              />
             </Field>
           </div>
+
+          {previewPerPulse != null && (
+            <div
+              className="rounded-xl px-4 py-3 text-sm flex items-center justify-between"
+              style={{ background: C.primarySoft, color: C.primary }}
+            >
+              <span>سعر النبضة</span>
+              <span className="font-bold">{formatMoney(previewPerPulse)}</span>
+            </div>
+          )}
+
+          <Field label="المدة (دقيقة)" error={errors.duration_minutes?.message}>
+            <Input {...register('duration_minutes')} type="number" inputMode="numeric" min={0} dir="ltr" />
+          </Field>
 
           <div className="flex gap-3 pt-1">
             <Button type="submit" loading={saving} className="flex-1">حفظ</Button>

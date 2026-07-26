@@ -1,6 +1,22 @@
 import type { Timestamp } from 'firebase/firestore'
 
-export type Role = 'super_admin' | 'admin' | 'staff' | 'client'
+/** Only the clinic team has accounts — visitors book without signing in. */
+export type Role = 'super_admin' | 'admin' | 'staff'
+
+export interface TeamMember {
+  id: string
+  uid: string
+  username?: string
+  name: string
+  phone?: string
+  email?: string
+  role: Role
+  is_active: boolean
+  working_hours?: string
+  created_by?: string
+  created_at?: Timestamp
+  deleted_at?: Timestamp | null
+}
 
 export type ReservationStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled'
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid'
@@ -28,9 +44,11 @@ export interface Service {
   name: string
   description?: string
   duration_minutes?: number
-  /** Flat price. Used when price_per_pulse is not set. */
+  /** Full price of one session of this service. */
   price: number
-  /** When set (> 0), the booking form charges pulses × this value. */
+  /** Pulses one session normally takes. Set it to price the service per pulse. */
+  default_pulses?: number | null
+  /** Derived on save: price ÷ default_pulses. The booking form charges pulses × this. */
   price_per_pulse?: number | null
   is_active?: boolean
   created_at?: Timestamp

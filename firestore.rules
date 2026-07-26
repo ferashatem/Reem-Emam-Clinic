@@ -2,6 +2,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    // Only the clinic team has accounts. Visitors book from the public site
+    // without signing in, so there is no "client" role anywhere below.
+
     function isAuth() {
       return request.auth != null;
     }
@@ -28,6 +32,7 @@ service cloud.firestore {
         getUserData().is_active == true;
     }
 
+    // The two partners (and the owner) — they see the books and patient files
     function isAdminOrSuperAdmin() {
       return isSuperAdmin() || isAdmin();
     }
@@ -37,134 +42,109 @@ service cloud.firestore {
       return isSuperAdmin() || isAdmin() || isStaff();
     }
 
-    // Checks if the authenticated user owns the client doc (uid field matches auth uid)
-    function isOwnerClient(clientId) {
-      return isAuth() &&
-        get(/databases/$(database)/documents/clients/$(clientId)).data.uid == request.auth.uid;
+    function isShortString(value, maxLen) {
+      return value is string && value.size() > 0 && value.size() <= maxLen;
     }
 
-    // Checks if auth user is the client who owns a reservation/report/review
-    // client_id in those docs = Firestore doc ID of the client, not Firebase Auth UID
-    function isClientOwnerOf(clientDocId) {
-      return isAuth() &&
-        get(/databases/$(database)/documents/clients/$(clientDocId)).data.uid == request.auth.uid;
-    }
-
-    // Users collection
+    // ── Users (team accounts) ────────────────────────────────────────────────
     match /users/{userId} {
       allow read: if isAuth() && request.auth.uid == userId;
       allow read: if isSuperAdmin();
       allow create, update, delete: if isSuperAdmin();
     }
 
-    // Settings — super admin write, whole team reads (partner names, clinic info)
+    // ── Settings ────────────────────────────────────────────────────────────
     match /settings/{docId} {
       allow read: if isTeam();
       allow write: if isSuperAdmin();
     }
 
-    // Services — public read, super admin write
+    // ── Services — the public site lists these ──────────────────────────────
     match /services/{serviceId} {
       allow read: if true;
       allow create, update, delete: if isSuperAdmin();
     }
 
-    // Contact requests — public write (unauthenticated booking form), admin read
+    // ── Contact requests — the landing page's "call me back" form ───────────
     match /contact_requests/{docId} {
-      allow create: if true;
+      allow create: if isShortString(request.resource.data.name, 80) &&
+        isShortString(request.resource.data.phone, 20);
       allow read: if isAdminOrSuperAdmin();
       allow update, delete: if isSuperAdmin();
     }
 
-    // Clients collection
+    // ── Patient files — internal only, never exposed to the public site ─────
     match /clients/{clientId} {
-      // Staff (reception) have read-only access to client data
-      allow read: if isTeam() ||
-        (isAuth() && resource.data.uid == request.auth.uid) ||
-        (isAuth() && resource.data.phone == request.auth.token.phone_number);
-      // Allow uid linking on first phone login (only uid field can be changed by client)
-      allow update: if isTeam() ||
-        (isAuth() &&
-         resource.data.uid == null &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid']) &&
-         request.resource.data.uid == request.auth.uid) ||
-        // Client updating their own doc (uid as document ID)
-        (isAuth() && clientId == request.auth.uid);
-      // Staff (reception) registers walk-in patients while booking for them
-      allow create: if isTeam() ||
-        (isAuth() &&
-         request.resource.data.uid == request.auth.uid &&
-         request.resource.data.phone == request.auth.token.phone_number) ||
-        // Client saving their own doc using uid as document ID
-        (isAuth() && clientId == request.auth.uid);
+      allow read, create, update: if isTeam();
       allow delete: if isSuperAdmin();
     }
 
-    // Reservations collection
+    // ── Reservations ────────────────────────────────────────────────────────
     match /reservations/{reservationId} {
-      // The partners and the assistant all work off the same schedule
-      allow read: if isTeam() ||
-        isClientOwnerOf(resource.data.client_id) ||
-        // Any authenticated user can read date/time to check slot availability
-        isAuth();
+      // A public booking request: no account, so it must be a pending request
+      // with nothing but the visitor's own details — it cannot be confirmed,
+      // priced as paid, or attached to an existing patient file.
+      function isPublicBookingRequest() {
+        return request.resource.data.status == 'pending' &&
+          request.resource.data.booked_by == 'client' &&
+          request.resource.data.client_id == null &&
+          request.resource.data.admin_id == null &&
+          request.resource.data.paid_amount == 0 &&
+          request.resource.data.payment_status == 'unpaid' &&
+          request.resource.data.price_at_booking is number &&
+          isShortString(request.resource.data.client_name, 80) &&
+          isShortString(request.resource.data.client_phone, 20) &&
+          isShortString(request.resource.data.date, 10) &&
+          isShortString(request.resource.data.time, 5) &&
+          request.resource.data.notes is string &&
+          request.resource.data.notes.size() <= 500;
+      }
+
+      // Patient names and phones live here — team eyes only.
+      allow read: if isTeam();
 
       allow create: if
-        // Any team member booking on a client's behalf, tagged with who did it
+        // Team member booking on a client's behalf, tagged with who did it
         (isTeam() && request.resource.data.admin_id == request.auth.uid) ||
-        // Client creates pending booking (client_id must be their own doc)
-        (isAuth() &&
-         request.resource.data.booked_by == 'client' &&
-         request.resource.data.status == 'pending' &&
-         request.resource.data.admin_id == null &&
-         isClientOwnerOf(request.resource.data.client_id));
+        isPublicBookingRequest();
 
-      // Team members edit bookings, confirm requests, and settle payments on them
-      allow update: if isTeam() ||
-        // Client can mark reservation as reviewed
-        (isClientOwnerOf(resource.data.client_id) &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewed']));
-
+      allow update: if isTeam();
       allow delete: if isSuperAdmin();
     }
 
-    // Timetable — clients can read to see available slots
+    // ── Timetable ───────────────────────────────────────────────────────────
     match /timetable/{slotId} {
-      allow read: if isAuth();
-      allow create: if isAdmin() && request.resource.data.admin_id == request.auth.uid;
-      allow update: if isSuperAdmin() ||
-        (isAdmin() && resource.data.admin_id == request.auth.uid);
+      allow read: if isTeam();
+      allow create, update: if isTeam();
       allow delete: if isSuperAdmin();
     }
 
-    // Session reports — both partners share the full patient file
+    // ── Session reports — both partners share the full patient file ─────────
     match /session_reports/{reportId} {
-      allow read: if isAdminOrSuperAdmin() ||
-        isClientOwnerOf(resource.data.client_id);
+      allow read: if isAdminOrSuperAdmin();
       allow create, update: if isAdminOrSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
-    // Reviews
+    // ── Reviews ─────────────────────────────────────────────────────────────
     match /reviews/{reviewId} {
-      allow read: if isAdminOrSuperAdmin() ||
-        isClientOwnerOf(resource.data.client_id);
-      allow create: if isAdminOrSuperAdmin() ||
-        (isAuth() && isClientOwnerOf(request.resource.data.client_id));
-      allow update: if isSuperAdmin();
+      allow read: if isTeam();
+      allow create, update: if isAdminOrSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
-    // Payments / Collections (تحصيلات) — recorded by staff after sessions
+    // ── Payments / collections (التحصيلات) ─────────────────────────────────
     match /payments/{paymentId} {
       allow read: if isTeam();
-      allow create: if isTeam() && request.resource.data.staff_id == request.auth.uid;
-      // Staff can soft-delete their own records; super admin can edit any
-      allow update: if isSuperAdmin() ||
-        (isStaff() && resource.data.staff_id == request.auth.uid);
+      allow create: if isTeam() &&
+        request.resource.data.staff_id == request.auth.uid &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0;
+      allow update: if isTeam();
       allow delete: if isSuperAdmin();
     }
 
-    // Expenses (المصاريف) — only the partners touch the books
+    // ── Expenses (المصاريف) — only the partners touch the books ────────────
     match /expenses/{expenseId} {
       allow read: if isAdminOrSuperAdmin();
       allow create: if isAdminOrSuperAdmin() &&
@@ -174,17 +154,17 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    // Monthly closing (الجرد الشهري) — snapshot of a month's numbers
+    // ── Monthly closing (الجرد الشهري) ─────────────────────────────────────
     match /monthly_closings/{month} {
       allow read: if isAdminOrSuperAdmin();
       allow create, update: if isAdminOrSuperAdmin();
       allow delete: if isSuperAdmin();
     }
 
-    // Notifications
+    // ── Notifications ───────────────────────────────────────────────────────
     match /notifications/{notifId} {
-      allow read: if isAdminOrSuperAdmin();
-      allow create: if isAdminOrSuperAdmin();
+      allow read: if isTeam();
+      allow create: if isTeam();
       allow update, delete: if isSuperAdmin();
     }
   }

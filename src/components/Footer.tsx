@@ -57,7 +57,13 @@ export default function Footer() {
         </div>
       </div>
 
-      <div className="foot__copy">{f.copy}</div>
+      <div className="foot__copy">
+        {f.copy}
+        {/* Team entrance — clients never sign in, so it stays out of the main nav */}
+        <Link to="/login" style={{ marginInlineStart: '1rem', opacity: 0.6, fontSize: '0.85em' }}>
+          {lang === 'ar' ? 'دخول الفريق' : 'Staff login'}
+        </Link>
+      </div>
     </footer>
   )
 }

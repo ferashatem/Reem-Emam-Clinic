@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { getActiveServices } from '../../services/firestore'
-import { useAuth } from '../../context/AuthContext'
 import PublicBookingModal from '../../components/PublicBookingModal'
 import Navbar from '../../components/Navbar'
 import '../../App.css'
@@ -54,8 +52,6 @@ function SkeletonCard() {
 }
 
 export default function ServicesPage() {
-  const navigate = useNavigate()
-  const { role, loading: authLoading } = useAuth()
   const [services, setServices] = useState<Service[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedService, setSelectedService] = useState<Service | null>(null)
@@ -71,11 +67,7 @@ export default function ServicesPage() {
   }, [])
 
   function handleBookClick(service: Service) {
-    if (!authLoading && role === 'client') {
-      navigate(`/client/book?service=${service.id}`)
-    } else {
-      setSelectedService(service)
-    }
+    setSelectedService(service)
   }
 
   return (

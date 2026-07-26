@@ -38,7 +38,7 @@ interface PaymentForm {
   note: string
 }
 
-export default function StaffPayments() {
+export default function Payments() {
   const { userProfile } = useAuth()
   const { confirm, dialog } = useConfirm()
 

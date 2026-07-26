@@ -97,7 +97,7 @@ export default function Dashboard() {
         )}
         {view.unpaid.length > 0 && (
           <Alert
-            to={`${base}/accounting`}
+            to={`${base}/payments`}
             tone="red"
             text={`💳 ${view.unpaid.length} جلسة لسه متحصّلتش — إجمالي ${formatMoney(view.dueTotal)}`}
           />
@@ -117,30 +117,38 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="space-y-2.5">
-            {view.todayList.map(r => (
-              <Link
-                key={r.id}
-                to={`${base}/patients/${r.client_id}`}
-                className="flex items-center gap-3 sm:gap-4 p-3 rounded-xl border hover:bg-[#FDF6F0]/60 transition-colors"
-                style={{ borderColor: C.primarySoft }}
-              >
-                <div className="text-center min-w-[58px] shrink-0">
-                  <p className="text-sm font-bold" style={{ color: C.primary }}>{formatTime(r.time)}</p>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm truncate">{r.client_name || '—'}</p>
-                  <p className="text-xs text-gray-400 truncate">
-                    {r.service_name || '—'}{r.pulses ? ` · ${r.pulses} نبضة` : ''}
-                  </p>
-                </div>
-                <div className="text-end shrink-0">
-                  <p className="text-sm font-semibold mb-1" style={{ color: C.gold }}>
-                    {formatMoney(r.price_at_booking)}
-                  </p>
-                  <StatusBadge status={r.status} />
-                </div>
-              </Link>
-            ))}
+            {view.todayList.map(r => {
+              const row = (
+                <>
+                  <div className="text-center min-w-14.5 shrink-0">
+                    <p className="text-sm font-bold" style={{ color: C.primary }}>{formatTime(r.time)}</p>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm truncate">{r.client_name || '—'}</p>
+                    <p className="text-xs text-gray-400 truncate">
+                      {r.service_name || '—'}{r.pulses ? ` · ${r.pulses} نبضة` : ''}
+                    </p>
+                  </div>
+                  <div className="text-end shrink-0">
+                    <p className="text-sm font-semibold mb-1" style={{ color: C.gold }}>
+                      {formatMoney(r.price_at_booking)}
+                    </p>
+                    <StatusBadge status={r.status} />
+                  </div>
+                </>
+              )
+              const className = 'flex items-center gap-3 sm:gap-4 p-3 rounded-xl border transition-colors'
+              const style = { borderColor: C.primarySoft }
+
+              // Website requests have no patient file until the assistant confirms them
+              return r.client_id ? (
+                <Link key={r.id} to={`${base}/patients/${r.client_id}`} className={`${className} hover:bg-[#FDF6F0]/60`} style={style}>
+                  {row}
+                </Link>
+              ) : (
+                <div key={r.id} className={className} style={style}>{row}</div>
+              )
+            })}
           </div>
         )}
       </section>

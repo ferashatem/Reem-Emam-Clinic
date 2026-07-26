@@ -7,7 +7,7 @@ import { db } from './firebase'
 import { monthKey, toNumber, todayISO } from '../utils/formatters'
 import type {
   Client, Expense, MonthlyClosing, Payment, Reservation,
-  SessionReport, Service,
+  SessionReport, Service, TeamMember,
 } from '../types'
 
 const now = () => Timestamp.now()
@@ -38,38 +38,18 @@ export async function getUserById(uid: string) {
   return snap.exists() ? { id: snap.id, ...snap.data() } : null
 }
 
-export async function getUserByPhone(phone: string) {
-  const q = query(collection(db, 'users'), where('phone', '==', phone))
-  const snap = await getDocs(q)
-  if (snap.empty) return null
-  const d = snap.docs[0]
-  return { id: d.id, ...d.data() }
+/** Everyone on the internal team — super admins, partners, and assistants. */
+export async function getAdmins(): Promise<TeamMember[]> {
+  const snap = await getDocs(collection(db, 'users'))
+  return live<TeamMember>(snap.docs).sort(bySeconds('created_at'))
 }
 
-export async function linkUidToUser(docId: string, uid: string) {
-  await updateDoc(doc(db, 'users', docId), { uid })
-  // Copy to new doc with UID as ID so future lookups work
-  const snap = await getDoc(doc(db, 'users', docId))
-  if (snap.exists()) {
-    await setDoc(doc(db, 'users', uid), { ...snap.data(), uid })
-  }
-}
-
-export async function getAdmins() {
-  // Returns both admins and staff (the internal team)
-  const q = query(
-    collection(db, 'users'),
-    where('role', 'in', ['admin', 'staff']),
-    where('deleted_at', '==', null)
-  )
-  const snap = await getDocs(q)
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }))
-}
+const TEAM_ROLES = ['super_admin', 'admin', 'staff']
 
 export async function createAdmin(data: DocumentData) {
   return setDoc(doc(db, 'users', data.uid), {
     ...data,
-    role: data.role === 'staff' ? 'staff' : 'admin',
+    role: TEAM_ROLES.includes(data.role) ? data.role : 'admin',
     is_active: true,
     created_at: now(),
     deleted_at: null,
@@ -133,32 +113,12 @@ export async function getClientByPhone(phone: string) {
   return { id: d.id, ...d.data() }
 }
 
-export async function getClientByUid(uid: string) {
-  const q = query(collection(db, 'clients'), where('uid', '==', uid), where('deleted_at', '==', null))
-  const snap = await getDocs(q)
-  if (snap.empty) return null
-  const d = snap.docs[0]
-  return { id: d.id, ...d.data() }
-}
-
-export async function linkUidToClient(docId: string, uid: string) {
-  await updateDoc(doc(db, 'clients', docId), { uid })
-}
-
 export async function createClient(data: DocumentData) {
   return addDoc(collection(db, 'clients'), {
     ...data,
     created_at: now(),
     deleted_at: null,
   })
-}
-
-export async function saveClientByUid(uid: string, data: DocumentData) {
-  await setDoc(doc(db, 'clients', uid), {
-    ...data,
-    uid,
-    deleted_at: null,
-  }, { merge: true })
 }
 
 export async function updateClient(id: string, data: Partial<DocumentData>) {
@@ -189,40 +149,6 @@ export async function getReservationsByClient(clientId: string): Promise<Reserva
   const q = query(collection(db, 'reservations'), where('client_id', '==', clientId))
   const snap = await getDocs(q)
   return live<Reservation>(snap.docs).sort(byDateDesc)
-}
-
-export async function getReservationById(id: string) {
-  const snap = await getDoc(doc(db, 'reservations', id))
-  return snap.exists() ? { id: snap.id, ...snap.data() } as Reservation : null
-}
-
-export async function getPendingClientReservations(): Promise<Reservation[]> {
-  const q = query(
-    collection(db, 'reservations'),
-    where('booked_by', '==', 'client'),
-    where('status', '==', 'pending')
-  )
-  const snap = await getDocs(q)
-  return live<Reservation>(snap.docs).sort(bySeconds('created_at'))
-}
-
-export async function getAvailableTimeSlots(date: string): Promise<string[]> {
-  const q = query(
-    collection(db, 'reservations'),
-    where('date', '==', date),
-    where('deleted_at', '==', null),
-    where('status', 'in', ['pending', 'confirmed'])
-  )
-  const snap = await getDocs(q)
-  const bookedTimes = snap.docs.map(d => d.data().time as string)
-
-  // 12:00 PM to 10:00 PM every 1 hour
-  const slots: string[] = []
-  for (let h = 12; h <= 22; h++) {
-    const time = `${String(h).padStart(2, '0')}:00`
-    if (!bookedTimes.includes(time)) slots.push(time)
-  }
-  return slots
 }
 
 export async function createReservation(data: DocumentData) {
@@ -298,26 +224,6 @@ export async function createSessionReport(data: DocumentData) {
 export async function getReviews() {
   const snap = await getDocs(collection(db, 'reviews'))
   return live<DocumentData & { id: string }>(snap.docs).sort(bySeconds('created_at'))
-}
-
-export async function getReviewByReservation(reservationId: string) {
-  const q = query(
-    collection(db, 'reviews'),
-    where('reservation_id', '==', reservationId),
-    where('deleted_at', '==', null)
-  )
-  const snap = await getDocs(q)
-  if (snap.empty) return null
-  return { id: snap.docs[0].id, ...snap.docs[0].data() }
-}
-
-export async function createReview(data: DocumentData) {
-  return addDoc(collection(db, 'reviews'), {
-    ...data,
-    wa_sent: false,
-    created_at: now(),
-    deleted_at: null,
-  })
 }
 
 export async function updateReview(id: string, data: Partial<DocumentData>) {
@@ -503,11 +409,3 @@ export async function saveClinicSettings(data: DocumentData) {
   return setDoc(doc(db, 'settings', 'clinic'), data, { merge: true })
 }
 
-// ─── Notifications ───────────────────────────────────────────────────────────
-
-export async function createNotification(data: DocumentData) {
-  return addDoc(collection(db, 'notifications'), {
-    ...data,
-    sent_at: now(),
-  })
-}

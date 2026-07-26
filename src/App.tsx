@@ -6,7 +6,6 @@ import ProtectedRoute from './components/layout/ProtectedRoute'
 import SuperAdminLayout from './components/layout/SuperAdminLayout'
 import AdminLayout from './components/layout/AdminLayout'
 import StaffLayout from './components/layout/StaffLayout'
-import ClientLayout from './components/layout/ClientLayout'
 
 // Public pages
 import LandingPage from './pages/public/LandingPage'
@@ -21,9 +20,7 @@ import Reservations from './pages/shared/Reservations'
 import Patients from './pages/shared/Patients'
 import PatientFile from './pages/shared/PatientFile'
 import Accounting from './pages/shared/Accounting'
-
-// Staff pages
-import StaffPayments from './pages/staff/Payments'
+import Payments from './pages/shared/Payments'
 
 // Admin-only pages
 import Timetable from './pages/admin/Timetable'
@@ -37,15 +34,6 @@ import Reports from './pages/super-admin/Reports'
 import Reviews from './pages/super-admin/Reviews'
 import Settings from './pages/super-admin/Settings'
 import ContactRequests from './pages/super-admin/ContactRequests'
-
-// Client pages
-import ClientOnboarding from './pages/client/Onboarding'
-import ClientHome from './pages/client/Home'
-import ClientBook from './pages/client/Book'
-import ClientSessions from './pages/client/Sessions'
-import ClientReports from './pages/client/Reports'
-import ClientProfile from './pages/client/Profile'
-import ClientReview from './pages/client/Review'
 
 export default function App() {
   return (
@@ -71,25 +59,6 @@ export default function App() {
             <Route path="/services" element={<ServicesPage />} />
             <Route path="/login" element={<LoginPage />} />
 
-            {/* Client Portal */}
-            <Route
-              path="/client"
-              element={
-                <ProtectedRoute role="client">
-                  <ClientLayout />
-                </ProtectedRoute>
-              }
-            >
-              <Route index element={<Navigate to="home" replace />} />
-              <Route path="onboarding" element={<ClientOnboarding />} />
-              <Route path="home" element={<ClientHome />} />
-              <Route path="book" element={<ClientBook />} />
-              <Route path="sessions" element={<ClientSessions />} />
-              <Route path="reports" element={<ClientReports />} />
-              <Route path="profile" element={<ClientProfile />} />
-              <Route path="review/:reservationId" element={<ClientReview />} />
-            </Route>
-
             {/* Super Admin */}
             <Route
               path="/super-admin"
@@ -104,6 +73,7 @@ export default function App() {
               <Route path="reservations" element={<Reservations />} />
               <Route path="patients" element={<Patients />} />
               <Route path="patients/:clientId" element={<PatientFile />} />
+              <Route path="payments" element={<Payments />} />
               <Route path="accounting" element={<Accounting />} />
               <Route path="admins" element={<Admins />} />
               <Route path="services" element={<Services />} />
@@ -130,6 +100,7 @@ export default function App() {
               <Route path="reservations" element={<Reservations />} />
               <Route path="patients" element={<Patients />} />
               <Route path="patients/:clientId" element={<PatientFile />} />
+              <Route path="payments" element={<Payments />} />
               <Route path="accounting" element={<Accounting />} />
               <Route path="session-reports" element={<SessionReports />} />
               <Route path="timetable" element={<Timetable />} />
@@ -149,11 +120,14 @@ export default function App() {
             >
               <Route index element={<Navigate to="reservations" replace />} />
               <Route path="reservations" element={<Reservations />} />
-              <Route path="payments" element={<StaffPayments />} />
+              <Route path="payments" element={<Payments />} />
               {/* Old links kept working */}
               <Route path="collections" element={<Navigate to="/staff/payments" replace />} />
               <Route path="*" element={<Navigate to="/staff/reservations" replace />} />
             </Route>
+
+            {/* The client portal is gone — anything pointing at it lands on the site */}
+            <Route path="/client/*" element={<Navigate to="/" replace />} />
 
             {/* Fallback */}
             <Route path="*" element={<Navigate to="/" replace />} />

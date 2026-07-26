@@ -1,237 +1,332 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { getAdmins, createAdmin, updateAdmin, softDeleteAdmin } from '../../services/firestore'
 import { createTeamMemberAuth } from '../../services/auth'
 import { useAuth } from '../../context/AuthContext'
+import { useLoader, messageFor } from '../../hooks/useLoader'
+import { useConfirm } from '../../components/ui/ConfirmDialog'
 import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
+import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
+import { Field, Input, Select, Button } from '../../components/ui/Form'
 import { normalizePhone } from '../../utils/validators'
+import { C } from '../../theme'
+import type { Role, TeamMember } from '../../types'
 
-interface AdminForm {
+interface MemberForm {
   name: string
   username: string
   password: string
   phone: string
   working_hours: string
-  role: 'admin' | 'staff'
+  role: Role
 }
 
-const roleLabels: Record<string, string> = {
-  admin: 'أدمن',
-  staff: 'استاف',
-}
+const roles: { value: Role; label: string; description: string; color: string }[] = [
+  {
+    value: 'super_admin',
+    label: 'مدير عام',
+    description: 'كل الصلاحيات + إدارة الفريق والخدمات والإعدادات',
+    color: '#7C3AED',
+  },
+  {
+    value: 'admin',
+    label: 'دكتورة / شريكة',
+    description: 'الحجوزات وملفات المرضى والحسابات والجرد',
+    color: '#8B3A52',
+  },
+  {
+    value: 'staff',
+    label: 'أسيستانت',
+    description: 'الحجوزات والدفع بس',
+    color: '#2563EB',
+  },
+]
+
+const roleOf = (value?: string) => roles.find(r => r.value === value) ?? roles[1]
 
 export default function Admins() {
-  const [admins, setAdmins] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [modalOpen, setModalOpen] = useState(false)
-  const [editTarget, setEditTarget] = useState<any | null>(null)
-  const [saving, setSaving] = useState(false)
   const { userProfile } = useAuth()
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<AdminForm>()
+  const { confirm, dialog } = useConfirm()
+  const { data, loading, error, reload } = useLoader(() => getAdmins(), [])
+  const team = data ?? []
 
-  async function load() {
-    setLoading(true)
-    setAdmins(await getAdmins())
-    setLoading(false)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<TeamMember | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const { register, handleSubmit, reset, formState: { errors } } = useForm<MemberForm>()
+
+  /** Locking yourself out is the one mistake this page must not allow. */
+  const isSelf = (m: TeamMember) => m.uid === userProfile?.uid || m.id === userProfile?.uid
+
+  function openCreate() {
+    setEditTarget(null)
+    reset({ name: '', username: '', password: '', phone: '', working_hours: '', role: 'admin' })
+    setModalOpen(true)
   }
 
-  useEffect(() => { load() }, [])
+  function openEdit(m: TeamMember) {
+    setEditTarget(m)
+    reset({
+      name: m.name ?? '',
+      username: m.username ?? '',
+      password: '',
+      phone: m.phone ?? '',
+      working_hours: m.working_hours ?? '',
+      role: m.role ?? 'admin',
+    })
+    setModalOpen(true)
+  }
 
-  function openCreate() { setEditTarget(null); reset({ role: 'admin' }); setModalOpen(true) }
-  function openEdit(admin: any) { setEditTarget(admin); reset({ ...admin, role: admin.role ?? 'admin' }); setModalOpen(true) }
-
-  async function onSubmit(data: AdminForm) {
+  async function onSubmit(values: MemberForm) {
     setSaving(true)
     try {
-      const phone = data.phone ? normalizePhone(data.phone) : ''
-      const role = data.role === 'staff' ? 'staff' : 'admin'
+      const phone = values.phone ? normalizePhone(values.phone) : ''
+
       if (editTarget) {
-        // Username & password are fixed at creation time (tied to the auth account)
+        // Username & password are fixed at creation — they belong to the auth account
         await updateAdmin(editTarget.id, {
-          name: data.name,
+          name: values.name.trim(),
           phone,
-          working_hours: data.working_hours ?? '',
-          role,
+          working_hours: values.working_hours?.trim() ?? '',
+          role: values.role,
         })
-        toast.success('Saved')
+        toast.success('تم حفظ التعديل')
       } else {
-        // 1) Create the Firebase Auth account (username → internal email + password)
-        const username = data.username.trim().toLowerCase()
-        const uid = await createTeamMemberAuth(username, data.password)
-        // 2) Create the Firestore profile doc keyed by the real UID
+        const username = values.username.trim().toLowerCase()
+        // 1) Firebase Auth account (username → internal email + password)
+        const uid = await createTeamMemberAuth(username, values.password)
+        // 2) Firestore profile keyed by the real UID — this is what grants the role
         await createAdmin({
           uid,
           username,
-          name: data.name,
+          name: values.name.trim(),
           phone,
-          working_hours: data.working_hours ?? '',
-          role,
+          working_hours: values.working_hours?.trim() ?? '',
+          role: values.role,
           created_by: userProfile?.uid ?? '',
         })
-        toast.success('Added — they can log in with their username & password')
+        toast.success('تم إنشاء الحساب ✅ تقدر تدخل باسم المستخدم والباسورد')
       }
+
       setModalOpen(false)
-      load()
-    } catch (err: any) {
-      const code = err?.code ?? ''
-      if (code === 'auth/email-already-in-use') toast.error('اسم المستخدم محجوز، اختاري اسم تاني')
-      else if (code === 'auth/weak-password') toast.error('الباسورد لازم يكون 6 حروف/أرقام على الأقل')
-      else if (code === 'auth/invalid-email') toast.error('اسم المستخدم غير صالح (بدون مسافات أو رموز)')
-      else if (code === 'auth/operation-not-allowed') toast.error('لازم تفعّلي Email/Password من إعدادات Firebase Authentication')
-      else toast.error(err?.message ?? 'An error occurred')
+      reload()
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code ?? ''
+      if (code === 'auth/email-already-in-use') toast.error('اسم المستخدم محجوز — اختاري اسم تاني')
+      else if (code === 'auth/weak-password') toast.error('الباسورد لازم 6 حروف/أرقام على الأقل')
+      else if (code === 'auth/invalid-email') toast.error('اسم المستخدم مش صالح (من غير مسافات أو رموز)')
+      else if (code === 'auth/operation-not-allowed') {
+        toast.error('فعّلي Email/Password من إعدادات Firebase Authentication', { duration: 6000 })
+      } else toast.error(messageFor(err))
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleDeactivate(admin: any) {
-    if (!confirm(`Delete ${admin.name}?`)) return
-    await softDeleteAdmin(admin.id)
-    toast.success('Admin deleted')
-    load()
+  async function handleToggleActive(m: TeamMember) {
+    if (isSelf(m)) {
+      toast.error('مينفعش تعطّلي حسابك انتي')
+      return
+    }
+    setBusyId(m.id)
+    try {
+      await updateAdmin(m.id, { is_active: !m.is_active })
+      toast.success(m.is_active ? 'تم تعطيل الحساب' : 'تم تفعيل الحساب')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
+    } finally {
+      setBusyId(null)
+    }
   }
 
-  async function handleToggleActive(admin: any) {
-    await updateAdmin(admin.id, { is_active: !admin.is_active })
-    toast.success(admin.is_active ? 'Account disabled' : 'Account enabled')
-    load()
+  async function handleDelete(m: TeamMember) {
+    if (isSelf(m)) {
+      toast.error('مينفعش تمسحي حسابك انتي')
+      return
+    }
+    const ok = await confirm({
+      title: 'مسح الحساب',
+      message: `هتمسحي حساب ${m.name}؟ مش هيقدر يدخل تاني، بس شغله المسجّل هيفضل زي ما هو.`,
+      confirmLabel: 'مسح',
+      danger: true,
+    })
+    if (!ok) return
+    setBusyId(m.id)
+    try {
+      await softDeleteAdmin(m.id)
+      toast.success('تم المسح')
+      reload()
+    } catch (err) {
+      toast.error(messageFor(err))
+    } finally {
+      setBusyId(null)
+    }
   }
+
+  const addButton = <Button className="w-full sm:w-auto" onClick={openCreate}>+ إضافة حساب</Button>
 
   return (
     <div>
-      <PageHeader
-        title="Admins"
-        subtitle="Add, edit, and disable admin accounts"
-        action={
-          <button onClick={openCreate} className="px-5 py-2.5 rounded-xl text-white text-sm font-medium" style={{ backgroundColor: '#8B3A52' }}>
-            + Add Admin
-          </button>
-        }
-      />
+      <PageHeader title="الفريق" subtitle={`${team.length} حساب`} action={addButton} />
 
       {loading ? (
-        <div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 rounded-full border-4 border-[#8B3A52] border-t-transparent" /></div>
-      ) : admins.length === 0 ? (
-        <EmptyState icon="👩‍💼" title="No admins yet" description="Add your first admin to get started" action={<button onClick={openCreate} className="px-5 py-2.5 rounded-xl text-white text-sm font-medium" style={{ backgroundColor: '#8B3A52' }}>+ Add Admin</button>} />
+        <LoadingBlock />
+      ) : error ? (
+        <ErrorState message={error} onRetry={reload} />
+      ) : team.length === 0 ? (
+        <EmptyState icon="👩‍💼" title="مفيش حسابات لسه" description="ضيفي أول حساب للفريق" action={addButton} />
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border overflow-hidden" style={{ borderColor: '#F2C4CE' }}>
-          <table className="w-full" dir="rtl">
-            <thead style={{ backgroundColor: '#FDF6F0' }}>
-              <tr>
-                {['الاسم', 'الدور', 'اسم المستخدم', 'التليفون', 'ساعات العمل', 'الحالة', ''].map(h => (
-                  <th key={h} className="text-right text-xs font-semibold px-4 py-3" style={{ color: '#8B3A52' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {admins.map(admin => (
-                <tr key={admin.id} className="border-t hover:bg-[#FDF6F0]/50 transition-colors" style={{ borderColor: '#F2C4CE30' }}>
-                  <td className="px-4 py-3 text-sm font-medium text-right">{admin.name}</td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${admin.role === 'staff' ? 'text-blue-700 bg-blue-50' : 'text-purple-700 bg-purple-50'}`}>
-                      {roleLabels[admin.role] ?? roleLabels.admin}
+        <div className="space-y-3">
+          {team.map(m => {
+            const role = roleOf(m.role)
+            const self = isSelf(m)
+            return (
+              <div
+                key={m.id}
+                className="bg-white rounded-2xl p-4 border shadow-sm flex flex-col sm:flex-row sm:items-center gap-3"
+                style={{ borderColor: C.primarySoft }}
+              >
+                <div
+                  className="w-11 h-11 rounded-full flex items-center justify-center text-base font-bold shrink-0"
+                  style={{ backgroundColor: `${role.color}18`, color: role.color }}
+                >
+                  {(m.name ?? '؟').trim().charAt(0)}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-semibold text-sm" style={{ color: C.text }}>{m.name}</p>
+                    <span
+                      className="text-xs px-2.5 py-0.5 rounded-full font-medium"
+                      style={{ backgroundColor: `${role.color}15`, color: role.color }}
+                    >
+                      {role.label}
                     </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-500 text-right" dir="ltr">{admin.username || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500 text-right" dir="ltr">{admin.phone || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-500 text-right">{admin.working_hours || '-'}</td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${admin.is_active ? 'text-green-700 bg-green-50' : 'text-gray-500 bg-gray-100'}`}>
-                      {admin.is_active ? 'نشط' : 'معطل'}
+                    {self && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">انتي</span>
+                    )}
+                    <span
+                      className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
+                        m.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {m.is_active ? 'نشط' : 'معطّل'}
                     </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2 justify-start">
-                      <button onClick={() => openEdit(admin)} className="text-xs px-3 py-1.5 rounded-lg border" style={{ borderColor: '#F2C4CE', color: '#8B3A52' }}>تعديل</button>
-                      <button onClick={() => handleToggleActive(admin)} className={`text-xs px-3 py-1.5 rounded-lg border ${admin.is_active ? 'text-orange-600 border-orange-200' : 'text-green-600 border-green-200'}`}>
-                        {admin.is_active ? 'تعطيل' : 'تفعيل'}
-                      </button>
-                      <button onClick={() => handleDeactivate(admin)} className="text-xs px-3 py-1.5 rounded-lg border text-red-500 border-red-200">حذف</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1" dir="ltr">
+                    {m.username || m.email || '—'}
+                    {m.phone ? ` · ${m.phone}` : ''}
+                    {m.working_hours ? ` · ${m.working_hours}` : ''}
+                  </p>
+                </div>
+
+                <div className="flex gap-2 shrink-0">
+                  <Button size="sm" variant="outline" onClick={() => openEdit(m)} disabled={busyId === m.id}>
+                    تعديل
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => handleToggleActive(m)}
+                    disabled={busyId === m.id || self}
+                    style={m.is_active
+                      ? { borderColor: '#FED7AA', color: '#C2410C' }
+                      : { borderColor: '#BBF7D0', color: '#15803D' }}
+                  >
+                    {m.is_active ? 'تعطيل' : 'تفعيل'}
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => handleDelete(m)}
+                    disabled={busyId === m.id || self}
+                    style={{ borderColor: '#FECACA', color: C.red }}
+                  >
+                    مسح
+                  </Button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'Edit Member' : 'Add New Member'}>
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={editTarget ? 'تعديل حساب' : 'إضافة حساب جديد'}
+      >
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Role</label>
-            <select {...register('role', { required: true })} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }}>
-              <option value="admin">أدمن — كل الصلاحيات</option>
-              <option value="staff">استاف — الحجوزات + بيانات العملاء + التحصيلات</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Name</label>
-            <input {...register('name', { required: true })} className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: errors.name ? '#ef4444' : '#F2C4CE' }} />
-          </div>
+          <Field label="الصلاحية" required hint={roleOf(editTarget?.role).description}>
+            <Select {...register('role', { required: true })}>
+              {roles.map(r => <option key={r.value} value={r.value}>{r.label} — {r.description}</option>)}
+            </Select>
+          </Field>
+
+          <Field label="الاسم" required error={errors.name && 'اكتبي الاسم'}>
+            <Input {...register('name', { required: true })} invalid={!!errors.name} placeholder="مثال: د. ريم" />
+          </Field>
 
           {editTarget ? (
-            <div>
-              <label className="block text-sm font-medium mb-1.5">اسم المستخدم</label>
-              <input value={editTarget.username || '-'} disabled dir="ltr" className="w-full border rounded-xl px-4 py-2.5 text-sm bg-gray-50 text-gray-500" style={{ borderColor: '#F2C4CE' }} />
-              <p className="text-xs text-gray-400 mt-1">اسم المستخدم والباسورد مش بيتغيّروا بعد الإنشاء</p>
-            </div>
+            <Field label="اسم المستخدم" hint="اسم المستخدم والباسورد مش بيتغيّروا بعد الإنشاء">
+              <Input value={editTarget.username || editTarget.email || '—'} disabled dir="ltr" />
+            </Field>
           ) : (
             <>
-              <div>
-                <label className="block text-sm font-medium mb-1.5">اسم المستخدم (Username)</label>
-                <input
+              <Field
+                label="اسم المستخدم"
+                required
+                error={errors.username && 'حروف إنجليزي وأرقام و . _ - بس، من غير مسافات'}
+                hint="ده اللي هتدخل بيه — مش إيميل"
+              >
+                <Input
                   {...register('username', { required: true, pattern: /^[a-zA-Z0-9._-]+$/ })}
+                  invalid={!!errors.username}
                   dir="ltr"
-                  placeholder="reem_reception"
+                  placeholder="reem"
                   autoComplete="off"
-                  className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]"
-                  style={{ borderColor: errors.username ? '#ef4444' : '#F2C4CE' }}
                 />
-                {errors.username && <p className="text-xs text-red-500 mt-1">حروف إنجليزي وأرقام و . _ - بس، من غير مسافات</p>}
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1.5">الباسورد (Password)</label>
-                <input
+              </Field>
+              <Field label="الباسورد" required error={errors.password && 'الباسورد لازم 6 حروف/أرقام على الأقل'}>
+                <Input
                   {...register('password', { required: true, minLength: 6 })}
+                  invalid={!!errors.password}
                   type="text"
                   dir="ltr"
                   placeholder="6 حروف/أرقام على الأقل"
                   autoComplete="new-password"
-                  className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]"
-                  style={{ borderColor: errors.password ? '#ef4444' : '#F2C4CE' }}
                 />
-                {errors.password && <p className="text-xs text-red-500 mt-1">الباسورد لازم 6 على الأقل</p>}
-              </div>
+              </Field>
             </>
           )}
 
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Phone Number (اختياري)</label>
-            <input {...register('phone')} dir="ltr" placeholder="01xxxxxxxxx" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1.5">Working Hours</label>
-            <input {...register('working_hours')} placeholder="9 AM - 5 PM" className="w-full border rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[#8B3A52]" style={{ borderColor: '#F2C4CE' }} />
-          </div>
-
-          <div className="bg-blue-50 rounded-xl p-3 text-xs text-blue-700">
-            💡 يسجّل الدخول باسم المستخدم والباسورد من تبويب "الإدارة"
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="رقم التليفون">
+              <Input {...register('phone')} dir="ltr" inputMode="tel" placeholder="01xxxxxxxxx" />
+            </Field>
+            <Field label="ساعات العمل">
+              <Input {...register('working_hours')} placeholder="9 ص - 5 م" />
+            </Field>
           </div>
 
-          <div className="flex gap-3 pt-2">
-            <button type="submit" disabled={saving} className="flex-1 py-2.5 rounded-xl text-white font-medium disabled:opacity-50" style={{ backgroundColor: '#8B3A52' }}>
-              {saving ? 'Saving...' : 'Save'}
-            </button>
-            <button type="button" onClick={() => setModalOpen(false)} className="flex-1 py-2.5 rounded-xl border font-medium" style={{ borderColor: '#F2C4CE', color: '#8B3A52' }}>
-              Cancel
-            </button>
+          {!editTarget && (
+            <div className="rounded-xl p-3 text-xs" style={{ backgroundColor: C.bg, color: C.primary }}>
+              💡 الباسورد بيتكتب مرة واحدة بس — احفظيه وابعتيه لصاحب الحساب، مش هتقدري تشوفيه تاني.
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <Button type="submit" loading={saving} className="flex-1">حفظ</Button>
+            <Button type="button" variant="outline" className="flex-1" onClick={() => setModalOpen(false)}>رجوع</Button>
           </div>
         </form>
       </Modal>
+
+      {dialog}
     </div>
   )
 }
