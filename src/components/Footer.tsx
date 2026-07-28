@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useLang } from '../context/LangContext'
 import BrandMark from './brand/BrandMark'
+import { FacebookIcon, InstagramIcon, WhatsAppIcon } from './brand/SocialIcons'
 
 export default function Footer() {
   const { tr, lang } = useLang()
@@ -22,10 +23,9 @@ export default function Footer() {
           <p className="foot__tag">{f.tag}</p>
           <a href="#booking" className="btn btn--gold btn--sm"><span>{f.getStarted}</span></a>
           <div className="foot__socials">
-            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Instagram">📸</a>
-            <a href="https://tiktok.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="TikTok">🎵</a>
-            <a href="https://wa.me/966500000000" target="_blank" rel="noreferrer" className="foot__s" aria-label="WhatsApp">💬</a>
-            <a href="https://snapchat.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Snapchat">👻</a>
+            <a href="https://facebook.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Facebook"><FacebookIcon /></a>
+            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="foot__s" aria-label="Instagram"><InstagramIcon /></a>
+            <a href="https://wa.me/201019191995" target="_blank" rel="noreferrer" className="foot__s" aria-label="WhatsApp"><WhatsAppIcon /></a>
           </div>
         </div>
 
@@ -68,8 +68,6 @@ export default function Footer() {
 
       <div className="foot__copy">
         <span>{f.copy}</span>
-        {/* Team entrance — clients never sign in, so it stays out of the main nav */}
-        <Link to="/login">{lang === 'ar' ? 'دخول الفريق' : 'Staff login'}</Link>
       </div>
     </footer>
   )

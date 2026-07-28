@@ -4,6 +4,7 @@ import { createReservation, getActiveServices } from '../services/firestore'
 import { normalizePhone } from '../utils/validators'
 import { toNumber, todayISO } from '../utils/formatters'
 import { useLang } from '../context/LangContext'
+import { AtIcon, PhoneIcon } from './brand/SocialIcons'
 import type { Service } from '../types'
 
 export default function Booking() {
@@ -67,11 +68,11 @@ export default function Booking() {
             {b.perks.map(p => <li key={p}><span className="chk" aria-hidden>✓</span>{p}</li>)}
           </ul>
           <div className="book__contacts reveal d4">
-            <a href="tel:+966500000000" className="book__contact">
-              <span className="ico" aria-hidden>📞</span>{b.contacts.phone.value}
+            <a href="tel:+201019191995" className="book__contact">
+              <span className="ico"><PhoneIcon /></span>{b.contacts.phone.value}
             </a>
             <a href="https://instagram.com" target="_blank" rel="noreferrer" className="book__contact">
-              <span className="ico" aria-hidden>📷</span>{b.contacts.instagram.value}
+              <span className="ico"><AtIcon /></span>{b.contacts.instagram.value}
             </a>
           </div>
         </div>
@@ -85,11 +86,12 @@ export default function Booking() {
                 <div className="form-row">
                   <div className="field">
                     <label htmlFor="bk-name">{b.name}</label>
-                    <input id="bk-name" name="name" type="text" placeholder={b.namePh} required />
+                    <input id="bk-name" name="name" type="text" placeholder={b.namePh} autoComplete="name" required />
                   </div>
                   <div className="field">
                     <label htmlFor="bk-phone">{b.phone}</label>
-                    <input id="bk-phone" name="phone" type="tel" placeholder={b.phonePh} required />
+                    {/* the numeric pad is the whole point of tel on a phone */}
+                    <input id="bk-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" placeholder={b.phonePh} required />
                   </div>
                 </div>
                 <div className="field">
@@ -100,13 +102,18 @@ export default function Booking() {
                   </select>
                 </div>
                 <div className="form-row">
-                  <div className="field">
+                  {/* The native empty-state hint renders its Arabic segments
+                      reversed («ةنس/رهش/موي»), so we blank it out and lay our
+                      own placeholder over the field until a date is picked. */}
+                  <div className="field field--picker">
                     <label htmlFor="bk-date">{b.date}</label>
                     <input id="bk-date" name="date" type="date" required min={todayISO()} />
+                    <span className="field__ph" aria-hidden>{b.datePh}</span>
                   </div>
-                  <div className="field">
+                  <div className="field field--picker">
                     <label htmlFor="bk-time">{b.time}</label>
                     <input id="bk-time" name="time" type="time" required />
+                    <span className="field__ph" aria-hidden>{b.timePh}</span>
                   </div>
                 </div>
                 <button type="submit" className="btn btn--primary btn--block" disabled={loading}>

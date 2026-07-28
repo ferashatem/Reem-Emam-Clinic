@@ -3,6 +3,7 @@ import AppShell from './AppShell'
 /** Reem & Rania — the partners. Full view of the clinic + the books. */
 const links = [
   { to: '/admin/dashboard', label: 'الرئيسية', icon: '🏠' },
+  { to: '/admin/clinic-day', label: 'يوم العيادة', icon: '🩺' },
   { to: '/admin/reservations', label: 'الحجوزات', icon: '📅' },
   { to: '/admin/payments', label: 'الدفع', icon: '💵' },
   { to: '/admin/patients', label: 'المرضى', icon: '👤' },

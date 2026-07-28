@@ -19,15 +19,24 @@ export default function LandingPage() {
     return () => document.body.classList.remove('landing-page')
   }, [])
 
-  // Reveal-on-scroll. Re-runs after paint so the sections mounted below are caught.
+  // Reveal-on-scroll. A hidden section is worse than an un-animated one, so the
+  // slightest sliver counts as "in view", and anything the page has already
+  // scrolled past (a #hash landing, a tall card on a phone) reveals outright.
   useEffect(() => {
+    const els = document.querySelectorAll<HTMLElement>('.reveal')
+    if (!('IntersectionObserver' in window)) {
+      els.forEach(el => el.classList.add('show'))
+      return
+    }
     const observer = new IntersectionObserver(
       entries => entries.forEach(e => {
-        if (e.isIntersecting) { e.target.classList.add('show'); observer.unobserve(e.target) }
+        if (!e.isIntersecting && e.boundingClientRect.top > 0) return
+        e.target.classList.add('show')
+        observer.unobserve(e.target)
       }),
-      { threshold: 0.12, rootMargin: '0px 0px -6% 0px' }
+      { threshold: 0, rootMargin: '0px 0px -8% 0px' }
     )
-    document.querySelectorAll('.reveal').forEach(el => observer.observe(el))
+    els.forEach(el => observer.observe(el))
     return () => observer.disconnect()
   }, [])
 

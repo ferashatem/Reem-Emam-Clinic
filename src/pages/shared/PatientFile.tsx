@@ -90,11 +90,9 @@ export default function PatientFile() {
 
   const stats = useMemo(() => {
     const active = reservations.filter(r => r.status !== 'cancelled')
-    const billed = active.reduce((s, r) => s + toNumber(r.price_at_booking), 0)
     const paid = payments.reduce((s, p) => s + toNumber(p.amount), 0)
     const done = active.filter(r => r.status === 'completed').length
-    const pulses = active.reduce((s, r) => s + toNumber(r.pulses), 0)
-    return { visits: active.length, done, billed, paid, due: Math.max(0, billed - paid), pulses }
+    return { visits: active.length, done, paid }
   }, [reservations, payments])
 
   // ─── Edit profile ─────────────────────────────────────────────────────────
@@ -152,16 +150,9 @@ export default function PatientFile() {
         action={<Button variant="outline" onClick={openEdit}>تعديل البيانات</Button>}
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-6">
         <StatCard label="عدد الزيارات" value={stats.visits} icon="📅" hint={`${stats.done} جلسة خلصت`} />
-        <StatCard label="إجمالي النبضات" value={stats.pulses || '—'} icon="⚡" color={C.gold} />
         <StatCard label="إجمالي المدفوع" value={formatMoney(stats.paid)} icon="💰" color={C.green} />
-        <StatCard
-          label="المستحق"
-          value={formatMoney(stats.due)}
-          icon="⏳"
-          color={stats.due > 0 ? C.amber : C.green}
-        />
       </div>
 
       {/* Profile */}

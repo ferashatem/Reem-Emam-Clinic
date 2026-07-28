@@ -18,6 +18,7 @@ import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form
 import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
 } from '../../utils/formatters'
+import { CLINIC_SLOTS, takenSlots, isSlotPast, slotOf } from '../../utils/slots'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsapp'
 import { C } from '../../theme'
@@ -245,6 +246,8 @@ export default function StaffReservations() {
   const watchedService = watch('service_id')
   const watchedPulses = watch('pulses')
   const watchedClientId = watch('client_id')
+  const watchedDate = watch('date')
+  const watchedTime = watch('time')
   const selectedService = serviceMap[watchedService]
   const perPulse = toNumber(selectedService?.price_per_pulse)
   const isPerPulse = perPulse > 0
@@ -266,6 +269,32 @@ export default function StaffReservations() {
       : clients
     return list.slice(0, 30)
   }, [clients, clientSearch])
+
+  // Which hours are already spoken for on the chosen day. The full list is
+  // already in memory, so no extra read — `onSubmit` re-checks against fresh
+  // data before writing, in case someone booked from another screen meanwhile.
+  const taken = useMemo(
+    () => takenSlots(reservations, watchedDate, editTarget?.id),
+    [reservations, watchedDate, editTarget]
+  )
+
+  const slotOptions = useMemo(() => {
+    const current = slotOf(watchedTime)
+    const list = CLINIC_SLOTS.map(slot => ({
+      slot,
+      takenBy: taken.get(slot),
+      past: isSlotPast(watchedDate, slot),
+    }))
+    // A booking made before the fixed hours (or from the website) can sit on an
+    // off-grid time — keep it selectable so editing doesn't silently move it.
+    if (watchedTime && !CLINIC_SLOTS.includes(watchedTime) && current) {
+      list.push({ slot: watchedTime, takenBy: undefined, past: false })
+      list.sort((a, b) => a.slot.localeCompare(b.slot))
+    }
+    return list
+  }, [taken, watchedDate, watchedTime])
+
+  const freeCount = slotOptions.filter(o => !o.takenBy && !o.past).length
 
   function openCreate() {
     setEditTarget(null)
@@ -323,6 +352,14 @@ export default function StaffReservations() {
   async function onSubmit(values: BookingForm) {
     setSaving(true)
     try {
+      // The list on screen can be minutes old — re-read the day before writing
+      // so two people booking at once can't land on the same hour.
+      const sameDay = await getReservations({ date: values.date })
+      const clash = takenSlots(sameDay, values.date, editTarget?.id).get(slotOf(values.time))
+      if (clash) {
+        throw new Error(`المعاد ده اتحجز للتو لـ ${nameOf(clash)} — اختاري معاد تاني`)
+      }
+
       const client = await resolveClient(values)
       const service = serviceMap[values.service_id]
       const payload = {
@@ -643,8 +680,31 @@ export default function StaffReservations() {
             <Field label="التاريخ" required error={errors.date?.message}>
               <Input {...register('date', { required: 'اختاري التاريخ' })} invalid={!!errors.date} type="date" />
             </Field>
-            <Field label="الوقت" required error={errors.time?.message}>
-              <Input {...register('time', { required: 'اختاري الوقت' })} invalid={!!errors.time} type="time" />
+            <Field
+              label="الوقت"
+              required
+              error={errors.time?.message}
+              hint={watchedDate
+                ? freeCount > 0
+                  ? `${freeCount} معاد فاضي — العيادة من ٩ ص لـ ٩ م`
+                  : 'اليوم ده اتحجز بالكامل'
+                : 'اختاري التاريخ الأول'}
+            >
+              <Select
+                {...register('time', {
+                  required: 'اختاري المعاد',
+                  validate: v => !taken.has(slotOf(v)) || 'المعاد ده محجوز — اختاري معاد تاني',
+                })}
+                invalid={!!errors.time}
+              >
+                <option value="">اختاري المعاد...</option>
+                {slotOptions.map(({ slot, takenBy, past }) => (
+                  <option key={slot} value={slot} disabled={!!takenBy || past}>
+                    {formatTime(slot)}
+                    {takenBy ? ` — محجوز (${nameOf(takenBy)})` : past ? ' — فات' : ''}
+                  </option>
+                ))}
+              </Select>
             </Field>
           </div>
 

@@ -16,6 +16,7 @@ import LoginPage from './pages/login/LoginPage'
 
 // Shared internal pages — same screens for the partners and the assistant
 import Dashboard from './pages/shared/Dashboard'
+import ClinicDay from './pages/shared/ClinicDay'
 import Reservations from './pages/shared/Reservations'
 import Patients from './pages/shared/Patients'
 import PatientFile from './pages/shared/PatientFile'
@@ -32,7 +33,6 @@ import Admins from './pages/super-admin/Admins'
 import Services from './pages/super-admin/Services'
 import Reports from './pages/super-admin/Reports'
 import Reviews from './pages/super-admin/Reviews'
-import Settings from './pages/super-admin/Settings'
 import ContactRequests from './pages/super-admin/ContactRequests'
 
 export default function App() {
@@ -70,6 +70,7 @@ export default function App() {
             >
               <Route index element={<Navigate to="dashboard" replace />} />
               <Route path="dashboard" element={<Dashboard />} />
+              <Route path="clinic-day" element={<ClinicDay />} />
               <Route path="reservations" element={<Reservations />} />
               <Route path="patients" element={<Patients />} />
               <Route path="patients/:clientId" element={<PatientFile />} />
@@ -80,7 +81,6 @@ export default function App() {
               <Route path="reports" element={<Reports />} />
               <Route path="reviews" element={<Reviews />} />
               <Route path="contact-requests" element={<ContactRequests />} />
-              <Route path="settings" element={<Settings />} />
               {/* Old links kept working */}
               <Route path="clients" element={<Navigate to="/super-admin/patients" replace />} />
               <Route path="*" element={<Navigate to="/super-admin/dashboard" replace />} />
@@ -97,6 +97,7 @@ export default function App() {
             >
               <Route index element={<Navigate to="dashboard" replace />} />
               <Route path="dashboard" element={<Dashboard />} />
+              <Route path="clinic-day" element={<ClinicDay />} />
               <Route path="reservations" element={<Reservations />} />
               <Route path="patients" element={<Patients />} />
               <Route path="patients/:clientId" element={<PatientFile />} />

@@ -3,13 +3,15 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* No `direction` here on purpose: a CSS declaration outranks the `dir`
+   attribute, so hard-coding rtl kept the whole English view right-aligned.
+   index.html ships dir="rtl" and LangContext flips it on the toggle. */
 html, body {
   margin: 0;
   padding: 0;
   font-family: 'Tajawal', sans-serif;
   background-color: #FDF6F0;
   color: #2C1A1D;
-  direction: rtl;
   -webkit-font-smoothing: antialiased;
 }
 

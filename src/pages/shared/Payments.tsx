@@ -42,6 +42,13 @@ export default function Payments() {
   const { userProfile } = useAuth()
   const { confirm, dialog } = useConfirm()
 
+  /**
+   * The assistant books and collects, but the clinic's takings aren't hers to
+   * see — so the month's revenue and the full collections history stay with the
+   * partners. She still gets today's drawer and what's owed, to do her job.
+   */
+  const isAssistant = userProfile?.role === 'staff'
+
   const { data, loading, error, reload } = useLoader(async () => {
     const [payments, reservations, clients] = await Promise.all([
       getPayments(), getReservations(), getClients(),
@@ -65,21 +72,33 @@ export default function Payments() {
 
   const today = todayISO()
 
-  /** Sessions that happened (or are confirmed for today) but aren't fully paid. */
+  /**
+   * Sessions that happened (or are confirmed for today) and aren't settled yet.
+   * The pulse count — and so the real price — is only known once the session is
+   * over, so a booking often sits here with no total at all. Those stay open
+   * instead of being dropped, until someone enters the amount the client owes.
+   */
   const awaitingPayment = useMemo(() => {
     return reservations
       .filter(r => {
         if (r.status === 'cancelled') return false
         if (r.status === 'pending') return false
+        if (r.date > today) return false
         const total = toNumber(r.price_at_booking)
-        if (total <= 0) return false
-        return toNumber(r.paid_amount) < total && r.date <= today
+        if (total <= 0) return true // not priced yet — waiting on the pulse count
+        return toNumber(r.paid_amount) < total
       })
       .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`))
   }, [reservations, today])
 
+  /** Open sessions with no price yet — the due total can't include them. */
+  const unpricedCount = useMemo(
+    () => awaitingPayment.filter(r => toNumber(r.price_at_booking) <= 0).length,
+    [awaitingPayment]
+  )
+
   const todayPayments = useMemo(() => payments.filter(p => p.date === today), [payments, today])
-  const visible = tab === 'today' ? todayPayments : payments
+  const visible = tab === 'today' || isAssistant ? todayPayments : payments
 
   const totals = useMemo(() => ({
     today: todayPayments.reduce((s, p) => s + toNumber(p.amount), 0),
@@ -106,13 +125,18 @@ export default function Payments() {
     return r.client_name || clientMap[r.client_id]?.name || 'عميلة محذوفة'
   }
 
+  /** Blank when the session has no price yet — staff types the post-session total. */
+  function remainingOf(r: Reservation) {
+    const total = toNumber(r.price_at_booking)
+    if (total <= 0) return ''
+    return String(Math.max(0, total - toNumber(r.paid_amount)))
+  }
+
   function openFor(r?: Reservation) {
     reset({
       reservation_id: r?.id ?? '',
       client_id: r?.client_id ?? '',
-      amount: r
-        ? String(Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount)))
-        : '',
+      amount: r ? remainingOf(r) : '',
       method: 'cash',
       date: todayISO(),
       note: '',
@@ -125,7 +149,7 @@ export default function Payments() {
     const r = reservations.find(x => x.id === id)
     if (!r) return
     setValue('client_id', r.client_id)
-    setValue('amount', String(Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount))))
+    setValue('amount', remainingOf(r))
   }
 
   async function onSubmit(values: PaymentForm) {
@@ -181,10 +205,20 @@ export default function Payments() {
         action={<Button className="w-full sm:w-auto" onClick={() => openFor()}>+ تسجيل دفعة</Button>}
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6">
+      <div className={`grid grid-cols-2 ${isAssistant ? '' : 'lg:grid-cols-3'} gap-3 sm:gap-4 mb-6`}>
         <StatCard label="تحصيل النهاردة" value={formatMoney(totals.today)} icon="💰" color={C.green} />
-        <StatCard label="تحصيل الشهر" value={formatMoney(totals.month)} icon="📆" />
-        <StatCard label="مستحق على العملاء" value={formatMoney(totals.due)} icon="⏳" color={C.amber} hint={`${awaitingPayment.length} جلسة`} />
+        {!isAssistant && <StatCard label="تحصيل الشهر" value={formatMoney(totals.month)} icon="📆" />}
+        <StatCard
+          label="مستحق على العملاء"
+          value={formatMoney(totals.due)}
+          icon="⏳"
+          color={C.amber}
+          hint={
+            unpricedCount > 0
+              ? `${awaitingPayment.length} جلسة · ${unpricedCount} لسه متسعّرتش`
+              : `${awaitingPayment.length} جلسة`
+          }
+        />
       </div>
 
       {loading ? (
@@ -201,28 +235,41 @@ export default function Payments() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {awaitingPayment.slice(0, 12).map(r => {
-                  const due = Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount))
+                  const total = toNumber(r.price_at_booking)
+                  const unpriced = total <= 0
+                  const due = Math.max(0, total - toNumber(r.paid_amount))
                   return (
                     <div
                       key={r.id}
                       className="bg-white rounded-2xl p-4 border shadow-sm flex items-center gap-3"
-                      style={{ borderColor: '#FDBA74' }}
+                      style={{ borderColor: unpriced ? C.primarySoft : '#FDBA74' }}
                     >
                       <div className="flex-1 min-w-0">
                         <p className="font-semibold text-sm truncate">{nameOf(r)}</p>
                         <p className="text-xs text-gray-500 truncate">
                           {r.service_name || '—'} · {formatDateShort(r.date)} · {formatTime(r.time)}
                         </p>
-                        <p className="text-sm font-bold mt-1" style={{ color: C.amber }}>
-                          مستحق: {formatMoney(due)}
-                          {toNumber(r.paid_amount) > 0 && (
+                        {unpriced ? (
+                          <p className="text-sm font-bold mt-1" style={{ color: C.primary }}>
+                            لسه متسعّرتش
                             <span className="text-xs font-normal text-gray-400 mr-2">
-                              (دفعت {formatMoney(r.paid_amount)})
+                              (سجّلي النبضات بعد الجلسة)
                             </span>
-                          )}
-                        </p>
+                          </p>
+                        ) : (
+                          <p className="text-sm font-bold mt-1" style={{ color: C.amber }}>
+                            مستحق: {formatMoney(due)}
+                            {toNumber(r.paid_amount) > 0 && (
+                              <span className="text-xs font-normal text-gray-400 mr-2">
+                                (دفعت {formatMoney(r.paid_amount)})
+                              </span>
+                            )}
+                          </p>
+                        )}
                       </div>
-                      <Button size="sm" onClick={() => openFor(r)}>استلام</Button>
+                      <Button size="sm" onClick={() => openFor(r)}>
+                        {unpriced ? 'تسعير وتحصيل' : 'استلام'}
+                      </Button>
                     </div>
                   )
                 })}
@@ -236,14 +283,20 @@ export default function Payments() {
           )}
 
           <div className="mb-4">
-            <Tabs
-              tabs={[
-                { value: 'today' as const, label: 'تحصيلات النهاردة', count: todayPayments.length },
-                { value: 'all' as const, label: 'كل التحصيلات', count: payments.length },
-              ]}
-              value={tab}
-              onChange={setTab}
-            />
+            {isAssistant ? (
+              <h2 className="text-sm font-bold" style={{ color: C.primary }}>
+                تحصيلات النهاردة ({todayPayments.length})
+              </h2>
+            ) : (
+              <Tabs
+                tabs={[
+                  { value: 'today' as const, label: 'تحصيلات النهاردة', count: todayPayments.length },
+                  { value: 'all' as const, label: 'كل التحصيلات', count: payments.length },
+                ]}
+                value={tab}
+                onChange={setTab}
+              />
+            )}
           </div>
 
           {visible.length === 0 ? (
@@ -348,18 +401,27 @@ export default function Payments() {
 
           {linkedReservation && (
             <div className="rounded-xl p-3 text-sm" style={{ backgroundColor: C.bg }}>
-              <div className="flex justify-between mb-1">
-                <span className="text-gray-500">إجمالي الجلسة</span>
-                <span className="font-medium">{formatMoney(linkedReservation.price_at_booking)}</span>
-              </div>
-              <div className="flex justify-between mb-1">
-                <span className="text-gray-500">مدفوع قبل كده</span>
-                <span className="font-medium">{formatMoney(linkedReservation.paid_amount)}</span>
-              </div>
-              <div className="flex justify-between font-bold" style={{ color: C.primary }}>
-                <span>المتبقي</span>
-                <span>{formatMoney(remaining)}</span>
-              </div>
+              {toNumber(linkedReservation.price_at_booking) <= 0 ? (
+                <p className="text-xs leading-relaxed" style={{ color: C.primary }}>
+                  الجلسة دي لسه متسعّرتش — عدد النبضات بيتعرف بعد الجلسة.
+                  اكتبي المبلغ اللي العميلة دافعاه دلوقتي، وعدّلي النبضات والسعر من صفحة الحجوزات.
+                </p>
+              ) : (
+                <>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-gray-500">إجمالي الجلسة</span>
+                    <span className="font-medium">{formatMoney(linkedReservation.price_at_booking)}</span>
+                  </div>
+                  <div className="flex justify-between mb-1">
+                    <span className="text-gray-500">مدفوع قبل كده</span>
+                    <span className="font-medium">{formatMoney(linkedReservation.paid_amount)}</span>
+                  </div>
+                  <div className="flex justify-between font-bold" style={{ color: C.primary }}>
+                    <span>المتبقي</span>
+                    <span>{formatMoney(remaining)}</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
