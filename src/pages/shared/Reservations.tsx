@@ -5,6 +5,7 @@ import {
   getReservations, createReservation, updateReservation, softDeleteReservation,
   getClients, getActiveServices, createClient, getClientByPhone,
 } from '../../services/firestore'
+import { backfillAvailability } from '../../services/availability'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
 import { useConfirm } from '../../components/ui/ConfirmDialog'
@@ -14,12 +15,13 @@ import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
 import Tabs from '../../components/ui/Tabs'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
+import { PricingPill, SourcePill } from '../../components/ui/Pills'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
 import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
 } from '../../utils/formatters'
-import { isPriced, perPulseOf } from '../../utils/pricing'
+import { dueOf, isPriced, perPulseOf, priceLabel } from '../../utils/pricing'
 import { CLINIC_SLOTS, takenSlots, isSlotPast, slotOf } from '../../utils/slots'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsapp'
@@ -52,11 +54,17 @@ const emptyForm: BookingForm = {
 export default function StaffReservations() {
   const { userProfile } = useAuth()
   const { confirm, dialog } = useConfirm()
+  /** The assistant takes the money; the doctor records the pulses. */
+  const collecting = userProfile?.role === 'staff'
 
   const { data, loading, error, reload } = useLoader(async () => {
     const [reservations, clients, services] = await Promise.all([
       getReservations(), getClients(), getActiveServices(),
     ])
+    // Publishes the upcoming days to the public site's slot mirror, once per
+    // session — bookings made before the mirror existed still have to show up
+    // as taken on the website.
+    void backfillAvailability(reservations)
     return { reservations, clients, services }
   }, [])
 
@@ -452,6 +460,8 @@ export default function StaffReservations() {
                 r={r}
                 name={nameOf(r)}
                 service={serviceOf(r)}
+                serviceDoc={serviceMap[r.service_id]}
+                collecting={collecting}
                 busy={busyId === r.id}
                 waHref={waLink(r)}
                 onConfirm={() => handleConfirm(r)}
@@ -479,22 +489,25 @@ export default function StaffReservations() {
                     <tr key={r.id} className="border-t hover:bg-[#FDF6F0]/60 transition-colors" style={{ borderColor: '#F2C4CE30' }}>
                       <td className="px-4 py-3">
                         <p className="font-medium">{nameOf(r)}</p>
-                        <p className="text-xs text-gray-400" dir="ltr">{phoneOf(r) || '—'}</p>
+                        <p className="text-xs text-gray-400 tabular-nums" dir="ltr">{phoneOf(r) || '—'}</p>
+                        <SourcePill bookedBy={r.booked_by} />
                       </td>
-                      <td className="px-4 py-3 text-gray-600">{serviceOf(r)}</td>
-                      <td className="px-4 py-3 text-gray-600">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
+                      <td className="px-4 py-3 text-gray-600">
+                        <p>{serviceOf(r)}</p>
+                        <PricingPill reservation={r} service={serviceMap[r.service_id]} className="mt-1" />
+                      </td>
+                      <td className="px-4 py-3 text-gray-600 tabular-nums">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(r.date)}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatTime(r.time)}</td>
-                      <td className="px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.primary }}>
-                        {isPriced(r)
-                          ? formatMoney(r.price_at_booking)
-                          : <span className="text-xs font-normal text-gray-400">لسه متسعّرتش</span>}
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums">
+                        <PriceText r={r} service={serviceMap[r.service_id]} />
                       </td>
                       <td className="px-4 py-3"><PaymentCell r={r} /></td>
                       <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
                       <td className="px-4 py-3">
                         <RowActions
                           r={r}
+                          collecting={collecting}
                           busy={busyId === r.id}
                           waHref={waLink(r)}
                           onConfirm={() => handleConfirm(r)}
@@ -705,6 +718,14 @@ const emptyTitles: Record<TabKey, string> = {
   past: 'مفيش حجوزات سابقة',
 }
 
+/** Reads either as money, or as the reason there isn't any money yet. */
+function PriceText({ r, service }: { r: Reservation; service?: Service }) {
+  const { text, pending } = priceLabel(r, service)
+  return pending
+    ? <span className="text-xs text-gray-400">{text}</span>
+    : <span className="font-semibold" style={{ color: C.primary }}>{text}</span>
+}
+
 function PaymentCell({ r }: { r: Reservation }) {
   // Nothing is owed until the session has been priced — showing "لسه مدفعش"
   // before that reads as a debt the client doesn't have yet.
@@ -725,6 +746,8 @@ function PaymentCell({ r }: { r: Reservation }) {
 
 interface ActionProps {
   r: Reservation
+  /** The assistant collects; the doctor prices. Changes what the button offers. */
+  collecting: boolean
   busy: boolean
   waHref: string
   onConfirm: () => void
@@ -734,20 +757,28 @@ interface ActionProps {
   onDelete: () => void
 }
 
-function RowActions({ r, busy, waHref, onConfirm, onComplete, onCancel, onEdit, onDelete }: ActionProps) {
+function RowActions({
+  r, collecting, busy, waHref, onConfirm, onComplete, onCancel, onEdit, onDelete,
+}: ActionProps) {
   const canConfirm = r.status === 'pending'
   const canComplete = r.status === 'confirmed' || r.status === 'pending'
   const closed = r.status === 'completed' || r.status === 'cancelled'
   // A finished-but-unpriced session still owes us its pulse count.
   const needsPricing = r.status === 'completed' && !isPriced(r)
+  // The assistant only has something to do here once there's a total to collect.
+  const showAction = collecting
+    ? isPriced(r) && dueOf(r) > 0
+    : canComplete || needsPricing
 
   return (
     <div className="flex gap-1.5 justify-end flex-wrap">
       {canConfirm && (
         <Button size="sm" variant="success" onClick={onConfirm} disabled={busy}>تأكيد</Button>
       )}
-      {(canComplete || needsPricing) && (
-        <Button size="sm" onClick={onComplete} disabled={busy}>إنهاء الجلسة</Button>
+      {showAction && (
+        <Button size="sm" onClick={onComplete} disabled={busy}>
+          {collecting ? `تحصيل ${formatMoney(dueOf(r))}` : 'إنهاء الجلسة'}
+        </Button>
       )}
       {waHref && (
         <a
@@ -776,8 +807,9 @@ function RowActions({ r, busy, waHref, onConfirm, onComplete, onCancel, onEdit, 
 }
 
 function ReservationCard({
-  r, name, service, busy, waHref, onConfirm, onComplete, onCancel, onEdit, onDelete,
-}: ActionProps & { name: string; service: string }) {
+  r, name, service, serviceDoc, collecting, busy, waHref,
+  onConfirm, onComplete, onCancel, onEdit, onDelete,
+}: ActionProps & { name: string; service: string; serviceDoc?: Service }) {
   const overdue = r.status !== 'completed' && r.status !== 'cancelled' && isPastSlot(r.date, r.time)
 
   return (
@@ -789,6 +821,10 @@ function ReservationCard({
         <div className="min-w-0">
           <p className="font-semibold text-sm truncate" style={{ color: C.text }}>{name}</p>
           <p className="text-xs text-gray-500 mt-0.5 truncate">{service}</p>
+          <div className="flex items-center gap-2 mt-1.5">
+            <PricingPill reservation={r} service={serviceDoc} />
+            <SourcePill bookedBy={r.booked_by} />
+          </div>
         </div>
         <StatusBadge status={r.status} />
       </div>
@@ -799,8 +835,8 @@ function ReservationCard({
         {r.pulses ? <Info label="النبضات" value={`${r.pulses} نبضة`} /> : null}
         <Info
           label="الإجمالي"
-          value={isPriced(r) ? formatMoney(r.price_at_booking) : 'لسه متسعّرتش'}
-          strong={isPriced(r)}
+          value={priceLabel(r, serviceDoc).text}
+          strong={!priceLabel(r, serviceDoc).pending}
         />
       </div>
 
@@ -809,7 +845,7 @@ function ReservationCard({
       {r.notes && <p className="text-xs text-gray-500 bg-gray-50 rounded-xl p-2.5 mb-3">{r.notes}</p>}
 
       <RowActions
-        r={r} busy={busy} waHref={waHref}
+        r={r} collecting={collecting} busy={busy} waHref={waHref}
         onConfirm={onConfirm} onComplete={onComplete}
         onCancel={onCancel} onEdit={onEdit} onDelete={onDelete}
       />

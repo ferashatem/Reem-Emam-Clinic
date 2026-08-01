@@ -334,7 +334,7 @@ export default function Payments() {
                         </p>
                         {p.note && <p className="text-xs text-gray-400 mt-1">{p.note}</p>}
                       </div>
-                      <p className="font-bold text-base whitespace-nowrap" style={{ color: C.green }}>
+                      <p className="font-bold text-base whitespace-nowrap tabular-nums" style={{ color: C.green }}>
                         {formatMoney(p.amount)}
                       </p>
                     </div>
@@ -366,7 +366,7 @@ export default function Payments() {
                       {visible.map(p => (
                         <tr key={p.id} className="border-t hover:bg-[#FDF6F0]/60" style={{ borderColor: '#F2C4CE30' }}>
                           <td className="px-4 py-3 font-medium">{p.client_name || clientMap[p.client_id]?.name || '—'}</td>
-                          <td className="px-4 py-3 font-bold whitespace-nowrap" style={{ color: C.green }}>{formatMoney(p.amount)}</td>
+                          <td className="px-4 py-3 font-bold whitespace-nowrap tabular-nums" style={{ color: C.green }}>{formatMoney(p.amount)}</td>
                           <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{methodLabel(p.method)}</td>
                           <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(p.date)}</td>
                           <td className="px-4 py-3 text-gray-500">{p.staff_name || '—'}</td>

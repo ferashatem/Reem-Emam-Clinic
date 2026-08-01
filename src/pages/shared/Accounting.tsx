@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -36,6 +36,9 @@ const categories: { value: ExpenseCategory; label: string; icon: string }[] = [
 ]
 
 const categoryOf = (value?: string) => categories.find(c => c.value === value) ?? categories[7]
+
+/** Bills that land every single month — worth showing on their own so the fixed nut is visible. */
+const RECURRING: ExpenseCategory[] = ['rent', 'salaries', 'electricity', 'water']
 
 const methodLabels: Record<string, string> = {
   cash: 'كاش', instapay: 'إنستا باي', wallet: 'محفظة', card: 'فيزا',
@@ -100,10 +103,15 @@ export default function Accounting() {
     // The partners split whatever is left after expenses, equally.
     const share = partners.length > 0 ? netProfit / partners.length : 0
 
+    const biggest = byCategory[0] ?? null
+    const recurring = expenses
+      .filter(e => RECURRING.includes(e.category as ExpenseCategory))
+      .reduce((s, e) => s + toNumber(e.amount), 0)
+
     return {
       payments, expenses, sessions, revenue, totalExpenses, netProfit,
       billed, outstanding: Math.max(0, billed - revenue),
-      byCategory, byMethod, share,
+      byCategory, byMethod, share, biggest, recurring,
     }
   }, [data, month, partners])
 
@@ -371,64 +379,106 @@ export default function Accounting() {
 
           {/* ─── Expenses ─────────────────────────────────────────────────── */}
           {tab === 'expenses' && (
-            <div>
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-                <div>
-                  <p className="text-sm text-gray-500">إجمالي مصاريف {formatMonthAr(month)}</p>
-                  <p className="text-2xl font-bold" style={{ color: C.red }}>{formatMoney(book.totalExpenses)}</p>
-                </div>
-                <Button onClick={() => openExpense()} className="w-full sm:w-auto">+ إضافة مصروف</Button>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+                <KpiCard
+                  label="إجمالي مصاريف الشهر"
+                  value={formatMoney(book.totalExpenses)}
+                  hint={`${book.expenses.length} بند`}
+                  color={C.red}
+                />
+                <KpiCard
+                  label="أكبر بند"
+                  value={book.biggest ? `${book.biggest.icon} ${book.biggest.label}` : '—'}
+                  hint={book.biggest ? formatMoney(book.biggest.total) : 'مفيش مصاريف'}
+                />
+                <KpiCard
+                  label="مصاريف متكررة شهريًا"
+                  value={formatMoney(book.recurring)}
+                  hint="إيجار + مرتبات + كهربا ومياه"
+                  color={C.gold}
+                />
               </div>
 
-              {book.expenses.length === 0 ? (
-                <EmptyState
-                  icon="🧾"
-                  title="مفيش مصاريف مسجلة الشهر ده"
-                  description="سجّلي الكهربا والمياه والإيجار وأي مصروف عشان الجرد يطلع صح"
-                  action={<Button onClick={() => openExpense()}>+ إضافة مصروف</Button>}
-                />
-              ) : (
-                <div className="space-y-3">
-                  {book.expenses.map(e => {
-                    const cat = categoryOf(e.category)
-                    return (
-                      <div
-                        key={e.id}
-                        className="bg-white rounded-2xl p-4 border shadow-sm flex items-start gap-3"
-                        style={{ borderColor: C.primarySoft }}
-                      >
-                        <div
-                          className="w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0"
-                          style={{ backgroundColor: C.bg }}
-                        >
-                          {cat.icon}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm truncate">{e.title}</p>
-                          <p className="text-xs text-gray-500 mt-0.5">
-                            {cat.label} · {formatDateShort(e.date)}
-                            {e.created_by_name ? ` · ${e.created_by_name}` : ''}
-                          </p>
-                          {e.note && <p className="text-xs text-gray-400 mt-1">{e.note}</p>}
-                        </div>
-                        <div className="text-end shrink-0">
-                          <p className="font-bold text-sm mb-2" style={{ color: C.red }}>{formatMoney(e.amount)}</p>
-                          <div className="flex gap-1.5">
-                            <Button size="sm" variant="outline" onClick={() => openExpense(e)}>تعديل</Button>
-                            <Button
-                              size="sm" variant="outline"
-                              onClick={() => handleDeleteExpense(e)}
-                              style={{ borderColor: '#FECACA', color: C.red }}
-                            >
-                              مسح
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
+              <Panel
+                title={`مصاريف ${formatMonthAr(month)}`}
+                action={<Button size="sm" onClick={() => openExpense()}>+ إضافة مصروف</Button>}
+              >
+                {book.expenses.length === 0 ? (
+                  <EmptyState
+                    icon="🧾"
+                    title="مفيش مصاريف مسجلة الشهر ده"
+                    description="سجّلي الكهربا والمياه والإيجار وأي مصروف عشان الجرد يطلع صح"
+                    action={<Button onClick={() => openExpense()}>+ إضافة مصروف</Button>}
+                  />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm min-w-140">
+                      <thead>
+                        <tr className="text-xs text-gray-400">
+                          <Th>البند</Th>
+                          <Th>النوع</Th>
+                          <Th>التاريخ</Th>
+                          <Th align="end">المبلغ</Th>
+                          <Th align="end"> </Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {book.expenses.map(e => {
+                          const cat = categoryOf(e.category)
+                          return (
+                            <tr key={e.id} className="border-t" style={{ borderColor: C.bg }}>
+                              <td className="px-3 py-3">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <span
+                                    className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0"
+                                    style={{ backgroundColor: C.bg }}
+                                  >
+                                    {cat.icon}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="font-semibold truncate">{e.title}</p>
+                                    {e.note && <p className="text-xs text-gray-400 truncate">{e.note}</p>}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-3">
+                                <span
+                                  className="text-xs px-2.5 py-1 rounded-full whitespace-nowrap"
+                                  style={{ backgroundColor: C.bg, color: C.primary }}
+                                >
+                                  {cat.label}
+                                </span>
+                              </td>
+                              <td className="px-3 py-3 text-gray-500 whitespace-nowrap">
+                                {formatDateShort(e.date)}
+                                {e.created_by_name && (
+                                  <span className="block text-[11px] text-gray-400">{e.created_by_name}</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 text-end font-bold whitespace-nowrap" style={{ color: C.red }}>
+                                {formatMoney(e.amount)}
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="flex gap-1.5 justify-end">
+                                  <Button size="sm" variant="outline" onClick={() => openExpense(e)}>تعديل</Button>
+                                  <Button
+                                    size="sm" variant="outline"
+                                    onClick={() => handleDeleteExpense(e)}
+                                    style={{ borderColor: '#FECACA', color: C.red }}
+                                  >
+                                    مسح
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Panel>
             </div>
           )}
 
@@ -525,6 +575,20 @@ function Breakdown({
 }
 
 function ClosingsList({ closings, onPick }: { closings: MonthlyClosing[]; onPick: (month: string) => void }) {
+  // Oldest first reads like a timeline; the bars share one scale so months compare.
+  const months = [...closings].sort((a, b) => a.month.localeCompare(b.month))
+  const scale = Math.max(1, ...months.map(c => Math.max(toNumber(c.total_revenue), toNumber(c.total_expenses))))
+
+  const totals = months.reduce(
+    (s, c) => ({
+      revenue: s.revenue + toNumber(c.total_revenue),
+      expenses: s.expenses + toNumber(c.total_expenses),
+      net: s.net + toNumber(c.net_profit),
+      sessions: s.sessions + toNumber(c.sessions_count),
+    }),
+    { revenue: 0, expenses: 0, net: 0, sessions: 0 }
+  )
+
   if (closings.length === 0) {
     return (
       <EmptyState
@@ -536,62 +600,166 @@ function ClosingsList({ closings, onPick }: { closings: MonthlyClosing[]; onPick
   }
 
   return (
-    <div className="space-y-3">
-      {closings.map(c => {
-        const profitable = toNumber(c.net_profit) >= 0
-        return (
-          <div key={c.id} className="bg-white rounded-2xl p-4 border shadow-sm" style={{ borderColor: C.primarySoft }}>
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-              <div>
-                <p className="font-bold text-sm" style={{ color: C.primary }}>{formatMonthAr(c.month)}</p>
-                <p className="text-xs text-gray-400">
-                  {c.sessions_count ?? 0} جلسة · {c.payments_count ?? 0} عملية دفع
-                </p>
-              </div>
-              <button
-                onClick={() => onPick(c.month)}
-                className="text-xs px-3 py-1.5 rounded-lg border"
-                style={{ borderColor: C.primarySoft, color: C.primary }}
-              >
-                عرض تفاصيل الشهر
-              </button>
-            </div>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KpiCard label="شهور متقفلة" value={String(months.length)} hint={`${totals.sessions} جلسة`} />
+        <KpiCard label="إجمالي التحصيلات" value={formatMoney(totals.revenue)} color={C.green} />
+        <KpiCard label="إجمالي المصاريف" value={formatMoney(totals.expenses)} color={C.red} />
+        <KpiCard
+          label={totals.net >= 0 ? 'إجمالي صافي الربح' : 'إجمالي الخسارة'}
+          value={formatMoney(Math.abs(totals.net))}
+          color={totals.net >= 0 ? C.green : C.red}
+        />
+      </div>
 
-            <div className="grid grid-cols-3 gap-2 text-center mb-3">
-              <Cell label="تحصيلات" value={formatMoney(c.total_revenue)} color={C.green} />
-              <Cell label="مصاريف" value={formatMoney(c.total_expenses)} color={C.red} />
-              <Cell
-                label={profitable ? 'صافي الربح' : 'صافي الخسارة'}
-                value={formatMoney(Math.abs(toNumber(c.net_profit)))}
-                color={profitable ? C.green : C.red}
-              />
-            </div>
-
-            {c.partners?.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {c.partners.map(p => (
-                  <span
-                    key={p.name}
-                    className="text-xs px-3 py-1.5 rounded-full"
-                    style={{ backgroundColor: C.bg, color: C.primary }}
-                  >
-                    {p.name}: {formatMoney(p.amount)}
-                  </span>
-                ))}
-              </div>
-            )}
+      <Panel
+        title="أداء الشهور — تحصيلات مقابل مصاريف"
+        action={
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            <span className="flex items-center gap-1.5">
+              <i className="w-3 h-3 rounded-full" style={{ backgroundColor: C.green }} /> تحصيلات
+            </span>
+            <span className="flex items-center gap-1.5">
+              <i className="w-3 h-3 rounded-full" style={{ backgroundColor: C.primarySoft }} /> مصاريف
+            </span>
           </div>
-        )
-      })}
+        }
+      >
+        <div className="space-y-3 px-3 py-1">
+          {months.map(c => (
+            <div key={c.id} className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-3">
+              <span className="text-xs text-gray-500 truncate">{formatMonthAr(c.month)}</span>
+              <div className="space-y-1">
+                <Bar value={toNumber(c.total_revenue)} scale={scale} color={C.green} />
+                <Bar value={toNumber(c.total_expenses)} scale={scale} color={C.primarySoft} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel
+        title="أرشيف الشهور"
+        action={<span className="text-xs text-gray-400">اضغطي على الشهر لتفاصيله</span>}
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-160">
+            <thead>
+              <tr className="text-xs text-gray-400">
+                <Th>الشهر</Th>
+                <Th align="end">جلسات</Th>
+                <Th align="end">تحصيلات</Th>
+                <Th align="end">مصاريف</Th>
+                <Th align="end">صافي</Th>
+                <Th align="end">نصيب كل شريكة</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...months].reverse().map(c => {
+                const net = toNumber(c.net_profit)
+                const profitable = net >= 0
+                return (
+                  <tr
+                    key={c.id}
+                    onClick={() => onPick(c.month)}
+                    className="border-t cursor-pointer hover:bg-black/2"
+                    style={{ borderColor: C.bg }}
+                  >
+                    <td className="px-3 py-3">
+                      <p className="font-semibold whitespace-nowrap" style={{ color: C.primary }}>
+                        {formatMonthAr(c.month)}
+                      </p>
+                      <p className="text-[11px] text-gray-400">{c.payments_count ?? 0} عملية دفع</p>
+                    </td>
+                    <td className="px-3 py-3 text-end text-gray-600">{c.sessions_count ?? 0}</td>
+                    <td className="px-3 py-3 text-end whitespace-nowrap" style={{ color: C.green }}>
+                      {formatMoney(c.total_revenue)}
+                    </td>
+                    <td className="px-3 py-3 text-end text-gray-500 whitespace-nowrap">
+                      {formatMoney(c.total_expenses)}
+                    </td>
+                    <td
+                      className="px-3 py-3 text-end font-bold whitespace-nowrap"
+                      style={{ color: profitable ? C.green : C.red }}
+                    >
+                      {profitable ? '' : '−'}{formatMoney(Math.abs(net))}
+                    </td>
+                    <td className="px-3 py-3 text-end">
+                      <div className="flex flex-wrap gap-1.5 justify-end">
+                        {c.partners?.length > 0
+                          ? c.partners.map(p => (
+                              <span
+                                key={p.name}
+                                className="text-[11px] px-2.5 py-1 rounded-full whitespace-nowrap"
+                                style={{ backgroundColor: C.bg, color: C.primary }}
+                              >
+                                {p.name}: {formatMoney(p.amount)}
+                              </span>
+                            ))
+                          : <span className="text-gray-300">—</span>}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
     </div>
   )
 }
 
-function Cell({ label, value, color }: { label: string; value: string; color: string }) {
+function Bar({ value, scale, color }: { value: number; scale: number; color: string }) {
   return (
-    <div className="rounded-xl py-2" style={{ backgroundColor: C.bg }}>
-      <p className="text-sm font-bold wrap-break-word" style={{ color }}>{value}</p>
-      <p className="text-[11px] text-gray-400">{label}</p>
+    <div className="h-2.5 rounded-full overflow-hidden" style={{ backgroundColor: C.bg }}>
+      <div
+        className="h-full rounded-full"
+        style={{ width: `${Math.min(100, (value / scale) * 100)}%`, backgroundColor: color }}
+      />
     </div>
+  )
+}
+
+/** A titled white card with an optional action in its header — the page's one container shape. */
+function Panel({ title, action, children }: {
+  title: string
+  action?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <section className="bg-white rounded-2xl border shadow-sm overflow-hidden" style={{ borderColor: C.primarySoft }}>
+      <div
+        className="flex flex-wrap items-center gap-3 px-4 sm:px-5 py-3.5 border-b"
+        style={{ borderColor: C.bg }}
+      >
+        <h3 className="text-sm font-bold" style={{ color: C.primary }}>{title}</h3>
+        <div className="ms-auto">{action}</div>
+      </div>
+      <div className="p-2 sm:p-3">{children}</div>
+    </section>
+  )
+}
+
+function KpiCard({ label, value, hint, color = C.primary }: {
+  label: string
+  value: string
+  hint?: string
+  color?: string
+}) {
+  return (
+    <div className="bg-white rounded-2xl p-4 sm:p-5 border shadow-sm" style={{ borderColor: C.primarySoft }}>
+      <p className="text-xs text-gray-500 mb-1.5">{label}</p>
+      <p className="text-xl sm:text-2xl font-bold wrap-break-word" style={{ color }}>{value}</p>
+      {hint && <p className="text-xs text-gray-400 mt-1">{hint}</p>}
+    </div>
+  )
+}
+
+function Th({ children, align = 'start' }: { children: ReactNode; align?: 'start' | 'end' }) {
+  return (
+    <th className={`px-3 pb-2 pt-1 font-medium ${align === 'end' ? 'text-end' : 'text-start'}`}>
+      {children}
+    </th>
   )
 }

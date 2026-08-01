@@ -150,6 +150,17 @@ export default function Services() {
                   )}
                 </div>
 
+                {/* A worked example — "٥ ج / نبضة" is abstract until you see
+                    what a real session costs. */}
+                <div
+                  className="rounded-xl px-3 py-2 mb-4 text-xs tabular-nums"
+                  style={{ backgroundColor: C.bg, color: C.primary }}
+                >
+                  {perPulse > 0
+                    ? `مثال: ٥٠٠ نبضة = ${formatMoney(perPulse * 500)}`
+                    : 'سعر ثابت للجلسة — النبضات بتتسجل للتوثيق بس'}
+                </div>
+
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(s)}>تعديل</Button>
                   <Button

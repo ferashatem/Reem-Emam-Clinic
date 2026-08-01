@@ -1,18 +1,34 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import toast from 'react-hot-toast'
 import { createReservation, getActiveServices } from '../services/firestore'
+import { getBusySlots } from '../services/availability'
 import { normalizePhone } from '../utils/validators'
 import { toNumber, todayISO } from '../utils/formatters'
+import { CLINIC_SLOTS, isSlotPast, slotOf } from '../utils/slots'
 import { useLang } from '../context/LangContext'
 import { AtIcon, PhoneIcon } from './brand/SocialIcons'
+import type { Lang } from '../lang'
 import type { Service } from '../types'
 
+/** '14:00' → '٢:٠٠ م' / '2:00 PM'. */
+function clockLabel(slot: string, lang: Lang): string {
+  const [h, m] = slot.split(':')
+  const hour = Number(h)
+  const h12 = hour % 12 === 0 ? 12 : hour % 12
+  const period = lang === 'ar' ? (hour >= 12 ? 'م' : 'ص') : hour >= 12 ? 'PM' : 'AM'
+  return `${h12}:${m} ${period}`
+}
+
 export default function Booking() {
-  const { tr } = useLang()
+  const { tr, lang } = useLang()
   const b = tr.booking
   const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
   const [services, setServices] = useState<Service[]>([])
+  const [date, setDate] = useState('')
+  const [time, setTime] = useState('')
+  const [busy, setBusy] = useState<string[]>([])
+  const [checking, setChecking] = useState(false)
 
   // The select must offer real services so the request lands on a priced booking.
   useEffect(() => {
@@ -21,11 +37,61 @@ export default function Booking() {
       .catch(() => setServices([]))
   }, [])
 
+  // Which hours are gone on the chosen day. This reads the name-free mirror,
+  // never the bookings themselves — the visitor sees *that* an hour is taken,
+  // never who took it.
+  useEffect(() => {
+    if (!date) return
+    let live = true
+    getBusySlots(date)
+      .then(slots => {
+        if (!live) return
+        setBusy(slots)
+        // The day can fill up while she is still typing her name.
+        setTime(t => (t && slots.includes(slotOf(t)) ? '' : t))
+      })
+      .catch(() => { if (live) setBusy([]) })
+      .finally(() => { if (live) setChecking(false) })
+    return () => { live = false }
+  }, [date])
+
+  /** A new day means a fresh set of hours — never carry the old pick over. */
+  function pickDate(value: string) {
+    setDate(value)
+    setTime('')
+    setBusy([])
+    // The lookup starts in the effect below; flag it here so the field doesn't
+    // flash "all hours free" for the frame before the answer lands.
+    setChecking(!!value)
+  }
+
+  const slots = useMemo(
+    () => CLINIC_SLOTS.map(slot => ({
+      slot,
+      taken: busy.includes(slot),
+      past: isSlotPast(date, slot),
+    })),
+    [busy, date]
+  )
+
+  const freeCount = slots.filter(s => !s.taken && !s.past).length
+  const dayFull = !!date && !checking && freeCount === 0
+
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     const form = e.target as HTMLFormElement
     const data = new FormData(form)
     const service = services.find(s => s.id === data.get('service'))
+
+    // Someone may have claimed this hour since the page loaded.
+    const fresh = await getBusySlots(date).catch(() => busy)
+    if (fresh.includes(slotOf(time))) {
+      setBusy(fresh)
+      setTime('')
+      toast.error(b.timeTakenErr)
+      return
+    }
+
     setLoading(true)
     try {
       // Same shape the booking modal writes, so it shows up in «طلبات من الموقع».
@@ -40,8 +106,8 @@ export default function Booking() {
         price_at_booking: toNumber(service?.price),
         paid_amount: 0,
         payment_status: 'unpaid',
-        date: String(data.get('date') ?? ''),
-        time: String(data.get('time') ?? ''),
+        date,
+        time,
         notes: '',
         status: 'pending',
         booked_by: 'client',
@@ -49,6 +115,8 @@ export default function Booking() {
       })
       setSuccess(true)
       form.reset()
+      setDate('')
+      setTime('')
       setTimeout(() => setSuccess(false), 5500)
     } catch {
       toast.error('حدث خطأ، حاولي مرة أخرى')
@@ -107,16 +175,44 @@ export default function Booking() {
                       own placeholder over the field until a date is picked. */}
                   <div className="field field--picker">
                     <label htmlFor="bk-date">{b.date}</label>
-                    <input id="bk-date" name="date" type="date" required min={todayISO()} />
+                    <input
+                      id="bk-date" name="date" type="date" required min={todayISO()}
+                      value={date} onChange={e => pickDate(e.target.value)}
+                    />
                     <span className="field__ph" aria-hidden>{b.datePh}</span>
                   </div>
-                  <div className="field field--picker">
+                  {/* Fixed hourly slots rather than a free time input — she can
+                      only ask for an hour the clinic can actually give her. */}
+                  <div className="field">
                     <label htmlFor="bk-time">{b.time}</label>
-                    <input id="bk-time" name="time" type="time" required />
-                    <span className="field__ph" aria-hidden>{b.timePh}</span>
+                    <select
+                      id="bk-time" name="time" required
+                      value={time} onChange={e => setTime(e.target.value)}
+                      disabled={!date || checking}
+                    >
+                      <option value="" disabled>{b.timePh}</option>
+                      {slots.map(({ slot, taken, past }) => (
+                        <option key={slot} value={slot} disabled={taken || past}>
+                          {clockLabel(slot, lang)}
+                          {taken ? ` — ${b.timeBooked}` : past ? ` — ${b.timePast}` : ''}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
-                <button type="submit" className="btn btn--primary btn--block" disabled={loading}>
+
+                <p className={`slot-note${dayFull ? ' slot-note--full' : ''}`} role="status">
+                  <span className="slot-note__ico" aria-hidden>{dayFull ? '✕' : 'ⓘ'}</span>
+                  {!date
+                    ? b.timePickDate
+                    : checking
+                      ? b.timeChecking
+                      : dayFull
+                        ? b.timeFull
+                        : `${freeCount} ${b.timeFree} — ${b.timeNotice}`}
+                </p>
+
+                <button type="submit" className="btn btn--primary btn--block" disabled={loading || dayFull}>
                   <span>{loading ? '…' : b.submit}</span>
                 </button>
               </form>

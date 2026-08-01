@@ -7,6 +7,7 @@ import {
   getReservationsByClient, getSessionReportsByClient, getPaymentsByClient,
   getActiveServices,
 } from '../../services/firestore'
+import { backfillAvailability } from '../../services/availability'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
 import { useBasePath } from '../../hooks/useBasePath'
@@ -15,16 +16,17 @@ import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
+import { PricingPill, SourcePill } from '../../components/ui/Pills'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
 import {
   formatDateAr, formatDateShort, formatMoney, formatTime, todayISO, toNumber, toDate,
 } from '../../utils/formatters'
-import { dueOf, isPriced } from '../../utils/pricing'
+import { dueOf, isPriced, priceLabel } from '../../utils/pricing'
 import { slotOf } from '../../utils/slots'
 import { buildWhatsAppLink } from '../../utils/whatsapp'
 import { C } from '../../theme'
-import type { Client, Payment, Reservation, SessionReport } from '../../types'
+import type { Client, Payment, Reservation, Service, SessionReport } from '../../types'
 
 /** Where a patient sits relative to the clock — drives the badge and the sort accent. */
 type Turn = 'now' | 'late' | 'next' | 'done'
@@ -44,15 +46,65 @@ export default function ClinicDay() {
     return () => clearInterval(id)
   }, [])
 
-  const day = useLoader(() => getReservations({ date }), [date])
+  // Every booking, not just the day's: unsettled sessions from earlier days are
+  // money the assistant still has to collect, so they have to be on this screen.
+  const day = useLoader(async () => {
+    const reservations = await getReservations()
+    // Publishes the upcoming days to the public site's slot mirror, once per
+    // session — the desk lives on this screen, so it's the surest place to
+    // catch bookings made before the mirror existed.
+    void backfillAvailability(reservations)
+    return reservations
+  }, [])
+  /**
+   * The doctor prices a session on her own screen while the assistant's is
+   * already open, so this page has to go and look again by itself — otherwise
+   * the money never shows up at the desk until someone refreshes the browser.
+   */
+  const reloadDay = day.reload
+  useEffect(() => {
+    const id = setInterval(reloadDay, 30_000)
+    const onFocus = () => { if (!document.hidden) reloadDay() }
+    document.addEventListener('visibilitychange', onFocus)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onFocus)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [reloadDay])
+
   // Needed to price a session: the flat price for services that aren't per-pulse.
   const services = useLoader(() => getActiveServices(), [])
+  const serviceFor = (r: Reservation) => (services.data ?? []).find(s => s.id === r.service_id)
   const isToday = date === todayISO()
 
   const queue = useMemo(() => {
-    const list = (day.data ?? []).filter(r => r.status !== 'cancelled')
+    const list = (day.data ?? []).filter(r => r.date === date && r.status !== 'cancelled')
     return list.sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''))
-  }, [day.data])
+  }, [day.data, date])
+
+  /**
+   * Every session that still owes money — today's first, in the order the
+   * patients sat in the chair, then whatever is left over from earlier days.
+   * This is the assistant's job list, so it has to include the day on screen.
+   */
+  const debts = useMemo(() => {
+    return (day.data ?? [])
+      .filter(r =>
+        r.status !== 'cancelled' &&
+        r.status !== 'pending' &&
+        (r.date ?? '') <= todayISO() &&
+        dueOf(r) > 0
+      )
+      .sort((a, b) => {
+        // The day being viewed comes first; older debts trail behind it.
+        const onDate = (r: Reservation) => (r.date === date ? 0 : 1)
+        return onDate(a) - onDate(b) || `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
+      })
+  }, [day.data, date])
+
+  const debtsTotal = useMemo(() => debts.reduce((s, r) => s + dueOf(r), 0), [debts])
 
   /**
    * Whose turn it is: the booking sitting on the current hour, and if that hour
@@ -119,6 +171,8 @@ export default function ClinicDay() {
   // firestore.rules only lets the partners write session_reports — showing the
   // assistant a button that always fails on permissions would be a dead end.
   const canWriteReports = userProfile?.role !== 'staff'
+  /** The assistant's job here is the money; pricing belongs to the doctor. */
+  const collecting = userProfile?.role === 'staff'
   const [reportFor, setReportFor] = useState<Reservation | null>(null)
 
   function afterReport() {
@@ -157,7 +211,8 @@ export default function ClinicDay() {
         <MiniStat label="متبقي على المرضى" value={formatMoney(counts.due)} icon="💰" color={C.gold} />
       </div>
 
-      {day.loading ? (
+      {/* Only the first load blanks the screen — the 30s refresh stays invisible. */}
+      {day.loading && !day.data ? (
         <LoadingBlock />
       ) : day.error ? (
         <ErrorState message={day.error} onRetry={day.reload} />
@@ -178,6 +233,7 @@ export default function ClinicDay() {
               <QueueRow
                 key={r.id}
                 r={r}
+                service={serviceFor(r)}
                 turn={turnOf(r)}
                 active={selected?.id === r.id}
                 onSelect={() => setPickedId(r.id)}
@@ -191,6 +247,8 @@ export default function ClinicDay() {
               <PatientPanel
                 key={selected.id}
                 r={selected}
+                service={serviceFor(selected)}
+                collecting={collecting}
                 turn={turnOf(selected)}
                 base={base}
                 busy={busy}
@@ -210,9 +268,68 @@ export default function ClinicDay() {
         </div>
       )}
 
+      {/* Money still on the street — from any earlier day, not just this one.
+          Taking it is the assistant's job, so only she gets the collect button. */}
+      {debts.length > 0 && (
+        <section className="mt-6">
+          <div className="flex flex-wrap items-center gap-2 mb-3 px-1">
+            <h2 className="text-sm font-bold" style={{ color: C.primary }}>
+              💰 مطلوب تحصيل ({debts.length})
+            </h2>
+            <span className="text-sm font-bold ms-auto" style={{ color: C.amber }}>
+              {formatMoney(debtsTotal)}
+            </span>
+          </div>
+          {!collecting && (
+            <p className="text-xs text-gray-400 mb-3 px-1">
+              الأسيستانت هي اللي بتحصّل وتقفل الدفع — ده للمتابعة بس.
+            </p>
+          )}
+
+          <div className="space-y-2.5">
+            {debts.map(r => (
+              <div
+                key={r.id}
+                className="bg-white rounded-2xl p-3.5 border shadow-sm flex flex-wrap items-center gap-3"
+                style={{ borderColor: '#FDBA74' }}
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-sm truncate" style={{ color: C.text }}>
+                    {r.client_name || 'بدون اسم'}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">
+                    {r.date === date ? formatTime(r.time) : formatDateShort(r.date)}
+                    {' · '}{r.service_name || 'خدمة'}
+                    {r.pulses ? ` · ${r.pulses} نبضة` : ''}
+                  </p>
+                </div>
+
+                <div className="text-end shrink-0">
+                  <p className="text-[11px] text-gray-400">متبقي</p>
+                  <p className="font-bold text-sm" style={{ color: C.amber }}>{formatMoney(dueOf(r))}</p>
+                </div>
+
+                <div className="flex gap-2 shrink-0">
+                  {collecting && (
+                    <Button size="sm" onClick={() => setClosing(r)} disabled={busy}>تحصيل</Button>
+                  )}
+                  <Link
+                    to={`${base}/patients/${r.client_id}`}
+                    className="px-4 py-2 rounded-xl text-sm font-medium border bg-white"
+                    style={{ borderColor: C.primarySoft, color: C.primary }}
+                  >
+                    الملف
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <CloseSessionSheet
         reservation={closing}
-        service={closing ? (services.data ?? []).find(s => s.id === closing.service_id) : null}
+        service={closing ? serviceFor(closing) : null}
         onClose={() => setClosing(null)}
         onSaved={() => { setClosing(null); day.reload(); file.reload() }}
       />
@@ -239,15 +356,18 @@ const turnStyles: Record<Turn, { label: string; bg: string; color: string; borde
 }
 
 function QueueRow({
-  r, turn, active, onSelect,
-}: { r: Reservation; turn: Turn; active: boolean; onSelect: () => void }) {
+  r, service, turn, active, onSelect,
+}: {
+  r: Reservation; service?: Service | null
+  turn: Turn; active: boolean; onSelect: () => void
+}) {
   const style = turnStyles[turn]
   const priced = isPriced(r)
   const due = dueOf(r)
 
   /** One line telling the assistant what this patient still needs from her. */
   const money = !priced
-    ? { text: 'لسه متسعّرتش', color: '#9CA3AF' }
+    ? { text: priceLabel(r, service).text, color: '#9CA3AF' }
     : due > 0
       ? { text: `متبقي ${formatMoney(due)}`, color: C.amber }
       : { text: '✓ مدفوعة', color: C.green }
@@ -277,6 +397,10 @@ function QueueRow({
         <p className="text-xs text-gray-500 truncate">
           {r.service_name || 'خدمة'}{r.pulses ? ` · ${r.pulses} نبضة` : ''}
         </p>
+        <div className="flex items-center gap-2 mt-1">
+          <PricingPill reservation={r} service={service} />
+          <SourcePill bookedBy={r.booked_by} />
+        </div>
       </div>
 
       <div className="shrink-0 text-end space-y-1">
@@ -296,6 +420,9 @@ function QueueRow({
 
 interface PanelProps {
   r: Reservation
+  service?: Service | null
+  /** The assistant takes money; the doctor records pulses. Drives the CTA. */
+  collecting: boolean
   turn: Turn
   base: string
   busy: boolean
@@ -313,7 +440,7 @@ interface PanelProps {
 }
 
 function PatientPanel({
-  r, turn, base, busy, loading, error, onRetry,
+  r, service, collecting, turn, base, busy, loading, error, onRetry,
   client, visits, reports, payments, onConfirm, onClose, onReport,
 }: PanelProps) {
   const priced = isPriced(r)
@@ -350,7 +477,7 @@ function PatientPanel({
           <span>🕐 {formatTime(r.time)}</span>
           <span>💠 {r.service_name || 'خدمة'}</span>
           {r.pulses ? <span>⚡ {r.pulses} نبضة</span> : null}
-          <span>💵 {priced ? formatMoney(total) : 'السعر بعد الجلسة'}</span>
+          <span className="tabular-nums">💵 {priceLabel(r, service).text}</span>
         </div>
       </div>
 
@@ -427,8 +554,16 @@ function PatientPanel({
           {/* What she does now — closing the session is the whole job, so it
               gets the full-width primary button and everything else is quiet. */}
           <div className="space-y-2 pt-1">
-            <Button onClick={onClose} disabled={busy} className="w-full py-3.5! text-base!">
-              {priced ? '✏️ تعديل إقفال الجلسة' : '✅ إنهاء الجلسة وتحصيل'}
+            <Button
+              onClick={onClose}
+              disabled={busy || (collecting && !priced)}
+              className="w-full py-3.5! text-base!"
+            >
+              {collecting
+                ? priced
+                  ? due > 0 ? `💰 تحصيل ${formatMoney(due)}` : '✓ اتدفعت بالكامل'
+                  : '⏳ مستنية الدكتورة تسجّل النبضات'
+                : priced ? '✏️ تعديل النبضات والسعر' : '✅ إنهاء الجلسة وتسجيل النبضات'}
             </Button>
 
             <div className="flex flex-wrap gap-2">

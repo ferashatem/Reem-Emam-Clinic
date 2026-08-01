@@ -3,7 +3,8 @@ import {
   where, Timestamp, setDoc, runTransaction,
 } from 'firebase/firestore'
 import type { DocumentData } from 'firebase/firestore'
-import { db } from './firebase'
+import { auth, db } from './firebase'
+import { holdSlot, syncBusySlots } from './availability'
 import { monthKey, toNumber, todayISO } from '../utils/formatters'
 import type {
   Client, Expense, MonthlyClosing, Payment, Reservation,
@@ -151,8 +152,22 @@ export async function getReservationsByClient(clientId: string): Promise<Reserva
   return live<Reservation>(snap.docs).sort(byDateDesc)
 }
 
+/**
+ * Republishes the name-free slot mirror the public booking form reads.
+ * Best-effort on purpose: the mirror is a courtesy to the visitor, so a failure
+ * here must never lose a booking that was already written.
+ */
+async function refreshAvailability(...dates: (string | null | undefined)[]) {
+  const unique = [...new Set(dates.filter((d): d is string => !!d))]
+  for (const date of unique) {
+    try {
+      await syncBusySlots(date, await getReservations({ date }))
+    } catch { /* the bookings are the source of truth — the mirror can lag */ }
+  }
+}
+
 export async function createReservation(data: DocumentData) {
-  return addDoc(collection(db, 'reservations'), {
+  const ref = await addDoc(collection(db, 'reservations'), {
     status: 'pending',
     paid_amount: 0,
     payment_status: 'unpaid',
@@ -160,14 +175,34 @@ export async function createReservation(data: DocumentData) {
     created_at: now(),
     deleted_at: null,
   })
+
+  // A visitor can't read the day to rebuild it, so she just claims her own hour.
+  if (auth.currentUser) await refreshAvailability(data.date as string)
+  else {
+    try {
+      await holdSlot(String(data.date ?? ''), String(data.time ?? ''))
+    } catch { /* the request is in — the desk's next write fixes the mirror */ }
+  }
+
+  return ref
 }
 
 export async function updateReservation(id: string, data: Partial<DocumentData>) {
-  return updateDoc(doc(db, 'reservations', id), data)
+  const ref = doc(db, 'reservations', id)
+  // Pricing and payment edits don't move anyone's hour — only re-read the
+  // booking when the change could free or claim a slot.
+  const movesSlot = 'date' in data || 'time' in data || 'status' in data
+  const before = movesSlot ? (await getDoc(ref)).data() : null
+
+  await updateDoc(ref, data)
+  if (movesSlot) await refreshAvailability(before?.date, data.date as string)
 }
 
 export async function softDeleteReservation(id: string) {
-  return updateDoc(doc(db, 'reservations', id), { deleted_at: now() })
+  const ref = doc(db, 'reservations', id)
+  const before = (await getDoc(ref)).data()
+  await updateDoc(ref, { deleted_at: now() })
+  await refreshAvailability(before?.date)
 }
 
 // ─── Timetable ───────────────────────────────────────────────────────────────
@@ -304,63 +339,37 @@ export async function createPayment(data: DocumentData) {
 }
 
 /**
- * Closes a session: the pulse count, the price it produced, and the money the
- * client handed over — all in one transaction.
+ * Prices a finished session — the doctor's half of closing it out. She is the
+ * only one who knows how many pulses actually ran, so she records the count and
+ * the total it comes to; the assistant collects that total at the desk
+ * afterwards via `createPayment`.
  *
- * These three facts are learnt in the same breath at the end of a session, and
- * they have to land together: pricing without the payment leaves a booking that
- * looks unpaid, and `createPayment` can't be reused here because it reads the
- * total off the booking, which we're changing in the same write.
+ * Runs as a transaction because `payment_status` has to be re-derived against
+ * the new total: a client who paid a deposit against an unpriced booking would
+ * otherwise be left marked "paid" once a real total lands.
  */
 export async function closeSession(input: {
   reservationId: string
   pulses: number | null
-  /** Final agreed total, after any discount the assistant typed. */
+  /** Final agreed total, after any discount the doctor applied. */
   total: number
-  payment: { amount: number; method: string; note?: string; date?: string } | null
-  staff: { id: string; name: string }
-  clientId: string
-  clientName: string
 }) {
   const total = toNumber(input.total)
-  const amount = toNumber(input.payment?.amount)
-  const date = input.payment?.date || todayISO()
   const resRef = doc(db, 'reservations', input.reservationId)
-  const paymentRef = amount > 0 ? doc(collection(db, 'payments')) : null
 
   await runTransaction(db, async (tx) => {
     const resSnap = await tx.get(resRef)
     if (!resSnap.exists()) throw new Error('الحجز ده مش موجود')
 
-    // Any earlier money (a deposit, a first instalment) stays counted.
-    const alreadyPaid = toNumber((resSnap.data() as Reservation).paid_amount)
-    const paid = alreadyPaid + amount
+    const paid = toNumber((resSnap.data() as Reservation).paid_amount)
 
     tx.update(resRef, {
       pulses: input.pulses,
       price_at_booking: total,
       priced_at: now(),
       status: 'completed',
-      paid_amount: paid,
       payment_status: paymentStatusFor(paid, total),
     })
-
-    if (paymentRef) {
-      tx.set(paymentRef, {
-        client_id: input.clientId,
-        client_name: input.clientName,
-        reservation_id: input.reservationId,
-        amount,
-        method: input.payment!.method,
-        note: input.payment!.note ?? '',
-        date,
-        month: monthKey(date),
-        staff_id: input.staff.id,
-        staff_name: input.staff.name,
-        created_at: now(),
-        deleted_at: null,
-      })
-    }
   })
 }
 

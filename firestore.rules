@@ -114,6 +114,30 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    // ── Availability — the booked hours, with nobody's name on them ─────────
+    // The public booking form greys out hours that are taken, and it must do
+    // that without reading /reservations (patient names and phones live there).
+    // So this holds one doc per date: { taken: ['10:00', '14:00'] } — nothing
+    // else. The team rebuilds it from the bookings on every write; a visitor
+    // may only append the single hour she just requested, never clear the day.
+    match /availability/{date} {
+      function isSlotList(value) {
+        return value is list && value.size() <= 24;
+      }
+
+      allow read: if true;
+      allow write: if isTeam();
+
+      allow create: if request.resource.data.keys().hasOnly(['taken']) &&
+        isSlotList(request.resource.data.taken) &&
+        request.resource.data.taken.size() == 1;
+
+      allow update: if request.resource.data.keys().hasOnly(['taken']) &&
+        isSlotList(request.resource.data.taken) &&
+        request.resource.data.taken.hasAll(resource.data.taken) &&
+        request.resource.data.taken.size() == resource.data.taken.size() + 1;
+    }
+
     // ── Timetable ───────────────────────────────────────────────────────────
     match /timetable/{slotId} {
       allow read: if isTeam();
