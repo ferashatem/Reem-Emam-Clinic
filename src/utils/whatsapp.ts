@@ -1,11 +1,14 @@
 const GOOGLE_REVIEW_LINK = 'https://g.page/r/reem-glow-house/review'
 
+/**
+ * No price line: the total depends on the pulse count, which nobody knows
+ * until the session is over. Quoting a number here would be a guess.
+ */
 export function buildConfirmationMessage(params: {
   clientName: string
   date: string
   time: string
   serviceName: string
-  price: number
 }) {
   return `✨ أهلاً ${params.clientName}!
 
@@ -14,7 +17,6 @@ export function buildConfirmationMessage(params: {
 📅 التاريخ: ${params.date}
 ⏰ الوقت: ${params.time}
 💆 الخدمة: ${params.serviceName}
-💰 السعر: ${params.price} جنيه
 
 في حالة أي استفسار تواصلي معنا 💕
 — فريق ريم غلو هاوس`

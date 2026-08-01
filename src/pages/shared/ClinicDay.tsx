@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
   getReservations, updateReservation, getClientById, createSessionReport,
   getReservationsByClient, getSessionReportsByClient, getPaymentsByClient,
+  getActiveServices,
 } from '../../services/firestore'
-import { uploadSessionPhotos } from '../../services/storage'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
 import { useBasePath } from '../../hooks/useBasePath'
@@ -14,11 +14,13 @@ import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
+import CloseSessionSheet from '../../components/session/CloseSessionSheet'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
 import {
   formatDateAr, formatDateShort, formatMoney, formatTime, todayISO, toNumber, toDate,
 } from '../../utils/formatters'
+import { dueOf, isPriced } from '../../utils/pricing'
 import { slotOf } from '../../utils/slots'
 import { buildWhatsAppLink } from '../../utils/whatsapp'
 import { C } from '../../theme'
@@ -43,6 +45,8 @@ export default function ClinicDay() {
   }, [])
 
   const day = useLoader(() => getReservations({ date }), [date])
+  // Needed to price a session: the flat price for services that aren't per-pulse.
+  const services = useLoader(() => getActiveServices(), [])
   const isToday = date === todayISO()
 
   const queue = useMemo(() => {
@@ -77,9 +81,8 @@ export default function ClinicDay() {
 
   const counts = useMemo(() => {
     const done = queue.filter(r => r.status === 'completed').length
-    const due = queue.reduce(
-      (s, r) => s + Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount)), 0
-    )
+    // Only priced sessions owe anything — the rest have no total to owe against.
+    const due = queue.reduce((s, r) => s + dueOf(r), 0)
     return { total: queue.length, done, left: queue.length - done, due }
   }, [queue])
 
@@ -96,18 +99,8 @@ export default function ClinicDay() {
     return { client, visits, reports, payments }
   }, [clientId])
 
-  async function markDone(r: Reservation) {
-    setBusy(true)
-    try {
-      await updateReservation(r.id, { status: 'completed' })
-      toast.success('تم تسجيل الجلسة كمنتهية ✅')
-      day.reload()
-    } catch (err) {
-      toast.error(messageFor(err))
-    } finally {
-      setBusy(false)
-    }
-  }
+  /** Pulses, price, and payment all happen in one sheet — see CloseSessionSheet. */
+  const [closing, setClosing] = useState<Reservation | null>(null)
 
   async function markConfirmed(r: Reservation) {
     setBusy(true)
@@ -123,6 +116,9 @@ export default function ClinicDay() {
   }
 
   // ─── Session report ───────────────────────────────────────────────────────
+  // firestore.rules only lets the partners write session_reports — showing the
+  // assistant a button that always fails on permissions would be a dead end.
+  const canWriteReports = userProfile?.role !== 'staff'
   const [reportFor, setReportFor] = useState<Reservation | null>(null)
 
   function afterReport() {
@@ -206,13 +202,20 @@ export default function ClinicDay() {
                 reports={file.data?.reports ?? []}
                 payments={file.data?.payments ?? []}
                 onConfirm={() => markConfirmed(selected)}
-                onDone={() => markDone(selected)}
-                onReport={() => setReportFor(selected)}
+                onClose={() => setClosing(selected)}
+                onReport={canWriteReports ? () => setReportFor(selected) : undefined}
               />
             )}
           </div>
         </div>
       )}
+
+      <CloseSessionSheet
+        reservation={closing}
+        service={closing ? (services.data ?? []).find(s => s.id === closing.service_id) : null}
+        onClose={() => setClosing(null)}
+        onSaved={() => { setClosing(null); day.reload(); file.reload() }}
+      />
 
       {/* Keyed so every opening starts from a blank form instead of the last one */}
       <ReportModal
@@ -239,8 +242,15 @@ function QueueRow({
   r, turn, active, onSelect,
 }: { r: Reservation; turn: Turn; active: boolean; onSelect: () => void }) {
   const style = turnStyles[turn]
-  const total = toNumber(r.price_at_booking)
-  const due = Math.max(0, total - toNumber(r.paid_amount))
+  const priced = isPriced(r)
+  const due = dueOf(r)
+
+  /** One line telling the assistant what this patient still needs from her. */
+  const money = !priced
+    ? { text: 'لسه متسعّرتش', color: '#9CA3AF' }
+    : due > 0
+      ? { text: `متبقي ${formatMoney(due)}`, color: C.amber }
+      : { text: '✓ مدفوعة', color: C.green }
 
   return (
     <button
@@ -276,9 +286,7 @@ function QueueRow({
         >
           {style.label}
         </span>
-        {due > 0 && turn !== 'done' && (
-          <p className="text-[11px] text-gray-400">متبقي {formatMoney(due)}</p>
-        )}
+        <p className="text-[11px]" style={{ color: money.color }}>{money.text}</p>
       </div>
     </button>
   )
@@ -299,17 +307,19 @@ interface PanelProps {
   reports: SessionReport[]
   payments: Payment[]
   onConfirm: () => void
-  onDone: () => void
-  onReport: () => void
+  onClose: () => void
+  /** Undefined for the assistant — only the partners may write reports. */
+  onReport?: () => void
 }
 
 function PatientPanel({
   r, turn, base, busy, loading, error, onRetry,
-  client, visits, reports, payments, onConfirm, onDone, onReport,
+  client, visits, reports, payments, onConfirm, onClose, onReport,
 }: PanelProps) {
+  const priced = isPriced(r)
   const total = toNumber(r.price_at_booking)
   const paid = toNumber(r.paid_amount)
-  const due = Math.max(0, total - paid)
+  const due = dueOf(r)
   const paymentStatus = r.payment_status ?? (paid <= 0 ? 'unpaid' : paid < total ? 'partial' : 'paid')
   const phone = r.client_phone || client?.phone || ''
 
@@ -340,7 +350,7 @@ function PatientPanel({
           <span>🕐 {formatTime(r.time)}</span>
           <span>💠 {r.service_name || 'خدمة'}</span>
           {r.pulses ? <span>⚡ {r.pulses} نبضة</span> : null}
-          <span>💵 {formatMoney(total)}</span>
+          <span>💵 {priced ? formatMoney(total) : 'السعر بعد الجلسة'}</span>
         </div>
       </div>
 
@@ -373,14 +383,20 @@ function PatientPanel({
               <p className="text-xs font-bold" style={{ color: C.primary }}>جلسة النهاردة</p>
               <div className="flex gap-1.5">
                 <StatusBadge status={r.status} />
-                <StatusBadge status={paymentStatus} />
+                {priced && <StatusBadge status={paymentStatus} />}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3 text-sm">
-              <Detail label="الإجمالي" value={formatMoney(total)} />
-              <Detail label="مدفوع" value={formatMoney(paid)} />
-              <Detail label="متبقي" value={due > 0 ? formatMoney(due) : '—'} strong={due > 0} />
-            </div>
+            {priced ? (
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <Detail label="الإجمالي" value={formatMoney(total)} />
+                <Detail label="مدفوع" value={formatMoney(paid)} />
+                <Detail label="متبقي" value={due > 0 ? formatMoney(due) : '—'} strong={due > 0} />
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">
+                لسه متسعّرتش — سجّلي النبضات من «إنهاء الجلسة» والإجمالي هيتحسب لوحده.
+              </p>
+            )}
             {r.notes && (
               <p className="text-sm mt-3 bg-white rounded-xl p-3 leading-relaxed whitespace-pre-line">
                 {r.notes}
@@ -408,33 +424,39 @@ function PatientPanel({
             )}
           </section>
 
-          {/* What she does now */}
-          <div className="flex flex-wrap gap-2 pt-1">
-            {r.status === 'pending' && (
-              <Button variant="success" onClick={onConfirm} disabled={busy}>تأكيد الحجز</Button>
-            )}
-            <Button onClick={onReport} disabled={busy}>📝 تقرير الجلسة</Button>
-            {r.status !== 'completed' && (
-              <Button variant="outline" onClick={onDone} disabled={busy}>✅ خلصت الجلسة</Button>
-            )}
-            <Link
-              to={`${base}/patients/${r.client_id}`}
-              className="px-5 py-2.5 rounded-xl text-sm font-medium border bg-white"
-              style={{ borderColor: C.primarySoft, color: C.primary }}
-            >
-              الملف الكامل
-            </Link>
-            {phone && (
-              <a
-                href={buildWhatsAppLink(phone, '')}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-5 py-2.5 rounded-xl text-sm font-medium text-white border border-transparent"
-                style={{ backgroundColor: '#25D366' }}
+          {/* What she does now — closing the session is the whole job, so it
+              gets the full-width primary button and everything else is quiet. */}
+          <div className="space-y-2 pt-1">
+            <Button onClick={onClose} disabled={busy} className="w-full py-3.5! text-base!">
+              {priced ? '✏️ تعديل إقفال الجلسة' : '✅ إنهاء الجلسة وتحصيل'}
+            </Button>
+
+            <div className="flex flex-wrap gap-2">
+              {r.status === 'pending' && (
+                <Button variant="success" onClick={onConfirm} disabled={busy}>تأكيد الحجز</Button>
+              )}
+              {onReport && (
+                <Button variant="outline" onClick={onReport} disabled={busy}>📝 تقرير الجلسة</Button>
+              )}
+              <Link
+                to={`${base}/patients/${r.client_id}`}
+                className="px-5 py-2.5 rounded-xl text-sm font-medium border bg-white"
+                style={{ borderColor: C.primarySoft, color: C.primary }}
               >
-                واتساب
-              </a>
-            )}
+                الملف الكامل
+              </Link>
+              {phone && (
+                <a
+                  href={buildWhatsAppLink(phone, '')}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-5 py-2.5 rounded-xl text-sm font-medium text-white border border-transparent"
+                  style={{ backgroundColor: '#25D366' }}
+                >
+                  واتساب
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -479,17 +501,12 @@ function ReportSummary({ report }: { report: SessionReport }) {
 
 interface ReportFormValues {
   diagnosis: string
-  treatment: string
-  medicines: string
-  prohibited_items: string
-  food_recommendations: string
   products_used: string
   next_steps: string
 }
 
 const emptyReport: ReportFormValues = {
-  diagnosis: '', treatment: '', medicines: '',
-  prohibited_items: '', food_recommendations: '', products_used: '', next_steps: '',
+  diagnosis: '', products_used: '', next_steps: '',
 }
 
 function ReportModal({
@@ -501,38 +518,21 @@ function ReportModal({
   onSaved: () => void
 }) {
   const [saving, setSaving] = useState(false)
-  const [photos, setPhotos] = useState<File[]>([])
-  const [previews, setPreviews] = useState<string[]>([])
   const [alsoComplete, setAlsoComplete] = useState(reservation?.status !== 'completed')
-  const fileRef = useRef<HTMLInputElement>(null)
 
   const { register, handleSubmit, formState: { errors } } = useForm<ReportFormValues>({
     defaultValues: emptyReport,
   })
 
-  // Object URLs are only valid while the picked files are on screen.
-  useEffect(() => () => previews.forEach(URL.revokeObjectURL), [previews])
-
-  function pickPhotos(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    setPhotos(files)
-    setPreviews(files.map(f => URL.createObjectURL(f)))
-  }
-
   async function onSubmit(values: ReportFormValues) {
     if (!reservation) return
     setSaving(true)
     try {
-      const urls = photos.length > 0
-        ? await uploadSessionPhotos(photos, reservation.id)
-        : []
-
       await createSessionReport({
         ...values,
         reservation_id: reservation.id,
         client_id: reservation.client_id,
         admin_id: adminId,
-        photos: urls,
       })
 
       if (alsoComplete && reservation.status !== 'completed') {
@@ -550,10 +550,6 @@ function ReportModal({
 
   const fields: { name: keyof ReportFormValues; label: string; hint?: string; required?: boolean }[] = [
     { name: 'diagnosis', label: 'التشخيص', required: true, hint: 'حالة البشرة النهاردة' },
-    { name: 'treatment', label: 'العلاج اللي اتعمل' },
-    { name: 'medicines', label: '💊 الأدوية', hint: 'كل دوا في سطر — الاسم والجرعة' },
-    { name: 'prohibited_items', label: '🚫 ممنوعات', hint: 'شمس، سباحة، منتجات...' },
-    { name: 'food_recommendations', label: '🥗 توصيات الأكل' },
     { name: 'products_used', label: 'المنتجات المستخدمة' },
     { name: 'next_steps', label: 'الخطوات الجاية', hint: 'موعد الجلسة الجاية أو المتابعة' },
   ]
@@ -588,25 +584,6 @@ function ReportModal({
               />
             </Field>
           ))}
-
-          <Field label="صور الجلسة">
-            <input ref={fileRef} type="file" multiple accept="image/*" onChange={pickPhotos} className="hidden" />
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              className="w-full py-3 rounded-xl border-2 border-dashed text-sm transition-colors"
-              style={{ borderColor: C.primarySoft, color: C.primary }}
-            >
-              📷 اختاري الصور ({photos.length})
-            </button>
-            {previews.length > 0 && (
-              <div className="flex gap-2 mt-3 flex-wrap">
-                {previews.map((url, i) => (
-                  <img key={url} src={url} alt={`صورة ${i + 1}`} className="w-16 h-16 object-cover rounded-xl" />
-                ))}
-              </div>
-            )}
-          </Field>
 
           {reservation.status !== 'completed' && (
             <label className="flex items-center gap-2.5 text-sm cursor-pointer">

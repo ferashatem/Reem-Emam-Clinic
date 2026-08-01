@@ -119,12 +119,13 @@ export default function App() {
                 </ProtectedRoute>
               }
             >
-              <Route index element={<Navigate to="reservations" replace />} />
+              <Route index element={<Navigate to="clinic-day" replace />} />
+              <Route path="clinic-day" element={<ClinicDay />} />
               <Route path="reservations" element={<Reservations />} />
               <Route path="payments" element={<Payments />} />
               {/* Old links kept working */}
               <Route path="collections" element={<Navigate to="/staff/payments" replace />} />
-              <Route path="*" element={<Navigate to="/staff/reservations" replace />} />
+              <Route path="*" element={<Navigate to="/staff/clinic-day" replace />} />
             </Route>
 
             {/* The client portal is gone — anything pointing at it lands on the site */}

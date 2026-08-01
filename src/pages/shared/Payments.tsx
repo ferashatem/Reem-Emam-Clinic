@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
   getPayments, createPayment, softDeletePayment, getReservations, getClients,
+  getActiveServices,
 } from '../../services/firestore'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
@@ -12,11 +13,13 @@ import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatCard from '../../components/ui/StatCard'
 import Tabs from '../../components/ui/Tabs'
+import CloseSessionSheet from '../../components/session/CloseSessionSheet'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
 import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber,
 } from '../../utils/formatters'
+import { dueOf, isPriced } from '../../utils/pricing'
 import { C } from '../../theme'
 import type { Client, Payment, PaymentMethod, Reservation } from '../../types'
 
@@ -50,18 +53,20 @@ export default function Payments() {
   const isAssistant = userProfile?.role === 'staff'
 
   const { data, loading, error, reload } = useLoader(async () => {
-    const [payments, reservations, clients] = await Promise.all([
-      getPayments(), getReservations(), getClients(),
+    const [payments, reservations, clients, services] = await Promise.all([
+      getPayments(), getReservations(), getClients(), getActiveServices(),
     ])
-    return { payments, reservations, clients }
+    return { payments, reservations, clients, services }
   }, [])
 
   const payments = useMemo(() => data?.payments ?? [], [data])
   const reservations = useMemo(() => data?.reservations ?? [], [data])
   const clients = useMemo(() => data?.clients ?? [], [data])
+  const services = useMemo(() => data?.services ?? [], [data])
 
   const [tab, setTab] = useState<'today' | 'all'>('today')
   const [modalOpen, setModalOpen] = useState(false)
+  const [closing, setClosing] = useState<Reservation | null>(null)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -84,16 +89,15 @@ export default function Payments() {
         if (r.status === 'cancelled') return false
         if (r.status === 'pending') return false
         if (r.date > today) return false
-        const total = toNumber(r.price_at_booking)
-        if (total <= 0) return true // not priced yet — waiting on the pulse count
-        return toNumber(r.paid_amount) < total
+        if (!isPriced(r)) return true // waiting on the pulse count
+        return dueOf(r) > 0
       })
       .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`))
   }, [reservations, today])
 
   /** Open sessions with no price yet — the due total can't include them. */
   const unpricedCount = useMemo(
-    () => awaitingPayment.filter(r => toNumber(r.price_at_booking) <= 0).length,
+    () => awaitingPayment.filter(r => !isPriced(r)).length,
     [awaitingPayment]
   )
 
@@ -105,34 +109,41 @@ export default function Payments() {
     month: payments
       .filter(p => (p.date ?? '').startsWith(today.slice(0, 7)))
       .reduce((s, p) => s + toNumber(p.amount), 0),
-    due: awaitingPayment.reduce(
-      (s, r) => s + Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount)),
-      0
-    ),
+    due: awaitingPayment.reduce((s, r) => s + dueOf(r), 0),
   }), [todayPayments, payments, awaitingPayment, today])
 
   // ─── Form ─────────────────────────────────────────────────────────────────
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } =
     useForm<PaymentForm>()
 
+  const [sessionSearch, setSessionSearch] = useState('')
   const watchedResId = watch('reservation_id')
   const linkedReservation = reservations.find(r => r.id === watchedResId)
-  const remaining = linkedReservation
-    ? Math.max(0, toNumber(linkedReservation.price_at_booking) - toNumber(linkedReservation.paid_amount))
-    : 0
+  const remaining = linkedReservation ? dueOf(linkedReservation) : 0
 
   function nameOf(r: Reservation) {
     return r.client_name || clientMap[r.client_id]?.name || 'عميلة محذوفة'
   }
 
-  /** Blank when the session has no price yet — staff types the post-session total. */
+  /** A searchable short list beats a select holding every booking ever made. */
+  const matchingSessions = useMemo(() => {
+    const q = sessionSearch.trim().toLowerCase()
+    return reservations
+      .filter(r => r.status !== 'cancelled')
+      .filter(r => !q ||
+        nameOf(r).toLowerCase().includes(q) ||
+        (r.client_phone ?? '').includes(q))
+      .slice(0, 25)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reservations, sessionSearch, clientMap])
+
+  /** Blank when the session has no price yet — it has to be closed first. */
   function remainingOf(r: Reservation) {
-    const total = toNumber(r.price_at_booking)
-    if (total <= 0) return ''
-    return String(Math.max(0, total - toNumber(r.paid_amount)))
+    return isPriced(r) ? String(dueOf(r)) : ''
   }
 
   function openFor(r?: Reservation) {
+    setSessionSearch(r ? nameOf(r) : '')
     reset({
       reservation_id: r?.id ?? '',
       client_id: r?.client_id ?? '',
@@ -235,9 +246,8 @@ export default function Payments() {
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {awaitingPayment.slice(0, 12).map(r => {
-                  const total = toNumber(r.price_at_booking)
-                  const unpriced = total <= 0
-                  const due = Math.max(0, total - toNumber(r.paid_amount))
+                  const unpriced = !isPriced(r)
+                  const due = dueOf(r)
                   return (
                     <div
                       key={r.id}
@@ -253,7 +263,7 @@ export default function Payments() {
                           <p className="text-sm font-bold mt-1" style={{ color: C.primary }}>
                             لسه متسعّرتش
                             <span className="text-xs font-normal text-gray-400 mr-2">
-                              (سجّلي النبضات بعد الجلسة)
+                              (اقفلي الجلسة وسجّلي النبضات)
                             </span>
                           </p>
                         ) : (
@@ -267,8 +277,10 @@ export default function Payments() {
                           </p>
                         )}
                       </div>
-                      <Button size="sm" onClick={() => openFor(r)}>
-                        {unpriced ? 'تسعير وتحصيل' : 'استلام'}
+                      {/* An unpriced session can't take a payment against a
+                          total it doesn't have — close it instead. */}
+                      <Button size="sm" onClick={() => (unpriced ? setClosing(r) : openFor(r))}>
+                        {unpriced ? 'إنهاء الجلسة' : 'استلام'}
                       </Button>
                     </div>
                   )
@@ -381,30 +393,58 @@ export default function Payments() {
 
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل دفعة" width="max-w-lg">
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-          <Field label="الجلسة" hint="اختاري الجلسة عشان المبلغ يتربط بيها في الحسابات">
-            <Select
-              {...register('reservation_id', {
-                onChange: e => onReservationChange(e.target.value),
-              })}
-            >
-              <option value="">— دفعة مش مرتبطة بجلسة —</option>
-              {reservations
-                .filter(r => r.status !== 'cancelled')
-                .slice(0, 200)
-                .map(r => (
-                  <option key={r.id} value={r.id}>
-                    {nameOf(r)} — {formatDateShort(r.date)} {formatTime(r.time)} — {formatMoney(r.price_at_booking)}
-                  </option>
+          <Field
+            label="الجلسة"
+            hint="اختاري الجلسة عشان المبلغ يتربط بيها في الحسابات — أو سيبيها فاضية لدفعة عامة"
+          >
+            <div className="space-y-2">
+              <Input
+                value={sessionSearch}
+                onChange={e => setSessionSearch(e.target.value)}
+                placeholder="ابحثي بالاسم أو رقم التليفون..."
+              />
+              <input type="hidden" {...register('reservation_id')} />
+              <div
+                className="max-h-52 overflow-y-auto rounded-xl border divide-y"
+                style={{ borderColor: C.primarySoft }}
+              >
+                <button
+                  type="button"
+                  onClick={() => { setValue('reservation_id', ''); setValue('amount', '') }}
+                  className="w-full text-start px-4 py-3 text-sm transition-colors"
+                  style={!watchedResId
+                    ? { backgroundColor: C.primary, color: '#fff' }
+                    : { backgroundColor: '#fff' }}
+                >
+                  — دفعة مش مرتبطة بجلسة —
+                </button>
+                {matchingSessions.map(r => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => { setValue('reservation_id', r.id); onReservationChange(r.id) }}
+                    className="w-full text-start px-4 py-3 transition-colors"
+                    style={watchedResId === r.id
+                      ? { backgroundColor: C.primary, color: '#fff' }
+                      : { backgroundColor: '#fff' }}
+                  >
+                    <span className="text-sm font-medium block">{nameOf(r)}</span>
+                    <span className="text-xs opacity-70 block">
+                      {formatDateShort(r.date)} · {formatTime(r.time)} ·{' '}
+                      {isPriced(r) ? formatMoney(r.price_at_booking) : 'لسه متسعّرتش'}
+                    </span>
+                  </button>
                 ))}
-            </Select>
+              </div>
+            </div>
           </Field>
 
           {linkedReservation && (
             <div className="rounded-xl p-3 text-sm" style={{ backgroundColor: C.bg }}>
-              {toNumber(linkedReservation.price_at_booking) <= 0 ? (
+              {!isPriced(linkedReservation) ? (
                 <p className="text-xs leading-relaxed" style={{ color: C.primary }}>
                   الجلسة دي لسه متسعّرتش — عدد النبضات بيتعرف بعد الجلسة.
-                  اكتبي المبلغ اللي العميلة دافعاه دلوقتي، وعدّلي النبضات والسعر من صفحة الحجوزات.
+                  الأحسن تقفليها من زرار «إنهاء الجلسة»، وساعتها السعر والدفع بيتسجلوا مع بعض.
                 </p>
               ) : (
                 <>
@@ -465,6 +505,13 @@ export default function Payments() {
           </div>
         </form>
       </Modal>
+
+      <CloseSessionSheet
+        reservation={closing}
+        service={closing ? services.find(s => s.id === closing.service_id) : null}
+        onClose={() => setClosing(null)}
+        onSaved={() => { setClosing(null); reload() }}
+      />
 
       {dialog}
     </div>

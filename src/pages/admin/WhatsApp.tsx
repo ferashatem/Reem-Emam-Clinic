@@ -43,7 +43,6 @@ export default function WhatsApp() {
       date: formatDateAr(r.date),
       time: r.time,
       serviceName: service?.name ?? '',
-      price: r.price_at_booking,
     })
     return buildWhatsAppLink(client.phone, msg)
   }

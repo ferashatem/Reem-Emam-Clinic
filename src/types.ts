@@ -64,8 +64,13 @@ export interface Reservation {
   pulses?: number | null
   /** Snapshot of the service's per-pulse price at booking time. */
   price_per_pulse?: number | null
-  /** Final agreed total — auto-computed from pulses but always editable. */
+  /**
+   * Final agreed total. Stays 0 until the session is closed — the pulse count
+   * (and so the price) is only known after the laser has actually run.
+   */
   price_at_booking: number
+  /** Set when the session was closed and priced. Null = not priced yet. */
+  priced_at?: Timestamp | null
   /** Sum of all payments recorded against this reservation. */
   paid_amount?: number
   payment_status?: PaymentStatus

@@ -91,7 +91,9 @@ service cloud.firestore {
           request.resource.data.admin_id == null &&
           request.resource.data.paid_amount == 0 &&
           request.resource.data.payment_status == 'unpaid' &&
-          request.resource.data.price_at_booking is number &&
+          // Pricing only happens after the session — a request from the public
+          // site can never arrive carrying a total.
+          request.resource.data.price_at_booking == 0 &&
           isShortString(request.resource.data.client_name, 80) &&
           isShortString(request.resource.data.client_phone, 20) &&
           isShortString(request.resource.data.date, 10) &&

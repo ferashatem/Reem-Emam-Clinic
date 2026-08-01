@@ -11,6 +11,7 @@ import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import {
   formatDateAr, formatMoney, formatMonthAr, formatTime, monthKey, todayISO, toNumber,
 } from '../../utils/formatters'
+import { dueOf, isPriced } from '../../utils/pricing'
 import { C } from '../../theme'
 
 export default function Dashboard() {
@@ -41,18 +42,16 @@ export default function Dashboard() {
     const collectedToday = payments.filter(p => p.date === today).reduce((s, p) => s + toNumber(p.amount), 0)
 
     const requests = reservations.filter(r => r.status === 'pending' && r.booked_by === 'client')
+    // Unpriced sessions owe nothing yet — they're chased from "مستنية الدفع".
     const unpaid = reservations.filter(r => {
       if (r.status === 'cancelled' || r.status === 'pending') return false
-      const total = toNumber(r.price_at_booking)
-      return total > 0 && toNumber(r.paid_amount) < total && r.date <= today
+      return isPriced(r) && dueOf(r) > 0 && r.date <= today
     })
 
     return {
       todayList, revenue, spent, net: revenue - spent, collectedToday,
       requests, unpaid,
-      dueTotal: unpaid.reduce(
-        (s, r) => s + Math.max(0, toNumber(r.price_at_booking) - toNumber(r.paid_amount)), 0
-      ),
+      dueTotal: unpaid.reduce((s, r) => s + dueOf(r), 0),
       clients: data?.clients.length ?? 0,
     }
   }, [data, today, month])
@@ -131,7 +130,7 @@ export default function Dashboard() {
                   </div>
                   <div className="text-end shrink-0">
                     <p className="text-sm font-semibold mb-1" style={{ color: C.gold }}>
-                      {formatMoney(r.price_at_booking)}
+                      {isPriced(r) ? formatMoney(r.price_at_booking) : '—'}
                     </p>
                     <StatusBadge status={r.status} />
                   </div>

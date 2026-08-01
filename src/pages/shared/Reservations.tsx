@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -13,11 +13,13 @@ import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
 import Tabs from '../../components/ui/Tabs'
+import CloseSessionSheet from '../../components/session/CloseSessionSheet'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
 import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
 } from '../../utils/formatters'
+import { isPriced, perPulseOf } from '../../utils/pricing'
 import { CLINIC_SLOTS, takenSlots, isSlotPast, slotOf } from '../../utils/slots'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsapp'
@@ -26,14 +28,17 @@ import type { Client, Reservation, Service } from '../../types'
 
 type TabKey = 'requests' | 'today' | 'upcoming' | 'past'
 
+/**
+ * A booking is only who, what, and when. The pulse count — and so the price —
+ * can't exist until the laser has actually run, so neither is asked for here;
+ * both are filled in when the session is closed.
+ */
 interface BookingForm {
   client_id: string
   new_name: string
   new_phone: string
   new_age: string
   service_id: string
-  pulses: string
-  price_at_booking: string
   date: string
   time: string
   notes: string
@@ -41,8 +46,7 @@ interface BookingForm {
 
 const emptyForm: BookingForm = {
   client_id: '', new_name: '', new_phone: '', new_age: '',
-  service_id: '', pulses: '', price_at_booking: '',
-  date: todayISO(), time: '', notes: '',
+  service_id: '', date: todayISO(), time: '', notes: '',
 }
 
 export default function StaffReservations() {
@@ -64,6 +68,7 @@ export default function StaffReservations() {
   const [search, setSearch] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Reservation | null>(null)
+  const [closing, setClosing] = useState<Reservation | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const clientMap = useMemo(
@@ -230,7 +235,6 @@ export default function StaffReservations() {
       date: formatDateShort(r.date),
       time: formatTime(r.time),
       serviceName: serviceOf(r),
-      price: toNumber(r.price_at_booking),
     }))
   }
 
@@ -238,29 +242,15 @@ export default function StaffReservations() {
   const [isNewClient, setIsNewClient] = useState(false)
   const [clientSearch, setClientSearch] = useState('')
   const [saving, setSaving] = useState(false)
-  const [priceTouched, setPriceTouched] = useState(false)
 
   const form = useForm<BookingForm>({ defaultValues: emptyForm })
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = form
 
   const watchedService = watch('service_id')
-  const watchedPulses = watch('pulses')
   const watchedClientId = watch('client_id')
   const watchedDate = watch('date')
   const watchedTime = watch('time')
   const selectedService = serviceMap[watchedService]
-  const perPulse = toNumber(selectedService?.price_per_pulse)
-  const isPerPulse = perPulse > 0
-
-  // Auto-price: pulses × per-pulse rate, or the flat service price.
-  // Stops as soon as the assistant types her own number (discount, package…).
-  useEffect(() => {
-    if (!selectedService || priceTouched) return
-    const computed = isPerPulse
-      ? toNumber(watchedPulses) * perPulse
-      : toNumber(selectedService.price)
-    setValue('price_at_booking', computed ? String(computed) : '')
-  }, [selectedService, watchedPulses, perPulse, isPerPulse, priceTouched, setValue])
 
   const filteredClients = useMemo(() => {
     const q = clientSearch.trim().toLowerCase()
@@ -300,7 +290,6 @@ export default function StaffReservations() {
     setEditTarget(null)
     setIsNewClient(false)
     setClientSearch('')
-    setPriceTouched(false)
     reset({ ...emptyForm, date: todayISO() })
     setModalOpen(true)
   }
@@ -310,13 +299,10 @@ export default function StaffReservations() {
     setIsNewClient(false)
     // Seed the search so the booked client is guaranteed to be in the visible list
     setClientSearch(r.client_name || clientMap[r.client_id]?.name || '')
-    setPriceTouched(true) // keep the price already agreed with the client
     reset({
       ...emptyForm,
       client_id: r.client_id,
       service_id: r.service_id,
-      pulses: r.pulses != null ? String(r.pulses) : '',
-      price_at_booking: String(toNumber(r.price_at_booking)),
       date: r.date ?? todayISO(),
       time: r.time ?? '',
       notes: r.notes ?? '',
@@ -362,26 +348,33 @@ export default function StaffReservations() {
 
       const client = await resolveClient(values)
       const service = serviceMap[values.service_id]
-      const payload = {
+      const rate = perPulseOf(service)
+      const payload: Record<string, unknown> = {
         client_id: client.id,
         client_name: client.name ?? '',
         client_phone: client.phone ?? '',
         service_id: values.service_id,
         service_name: service?.name ?? '',
-        pulses: values.pulses ? toNumber(values.pulses) : null,
-        price_per_pulse: isPerPulse ? perPulse : null,
-        price_at_booking: toNumber(values.price_at_booking),
         date: values.date,
         time: values.time,
         notes: values.notes?.trim() ?? '',
       }
 
       if (editTarget) {
+        // Re-snapshot the rate only while the session is still unpriced —
+        // once it's closed, the number the client was actually charged wins.
+        if (!isPriced(editTarget)) payload.price_per_pulse = rate > 0 ? rate : null
         await updateReservation(editTarget.id, payload)
         toast.success('تم تعديل الحجز ✅')
       } else {
         await createReservation({
           ...payload,
+          // The rate is pinned now; the service's price may change before the
+          // client actually sits down, but this is the deal that was struck.
+          price_per_pulse: rate > 0 ? rate : null,
+          pulses: null,
+          price_at_booking: 0,
+          priced_at: null,
           status: 'confirmed',
           booked_by: 'staff',
           admin_id: userProfile?.uid ?? null,
@@ -462,7 +455,7 @@ export default function StaffReservations() {
                 busy={busyId === r.id}
                 waHref={waLink(r)}
                 onConfirm={() => handleConfirm(r)}
-                onComplete={() => patch(r, { status: 'completed' }, 'تم تسجيل الجلسة كمنتهية')}
+                onComplete={() => setClosing(r)}
                 onCancel={() => handleCancel(r)}
                 onEdit={() => openEdit(r)}
                 onDelete={() => handleDelete(r)}
@@ -492,7 +485,11 @@ export default function StaffReservations() {
                       <td className="px-4 py-3 text-gray-600">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(r.date)}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatTime(r.time)}</td>
-                      <td className="px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.primary }}>{formatMoney(r.price_at_booking)}</td>
+                      <td className="px-4 py-3 font-semibold whitespace-nowrap" style={{ color: C.primary }}>
+                        {isPriced(r)
+                          ? formatMoney(r.price_at_booking)
+                          : <span className="text-xs font-normal text-gray-400">لسه متسعّرتش</span>}
+                      </td>
                       <td className="px-4 py-3"><PaymentCell r={r} /></td>
                       <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
                       <td className="px-4 py-3">
@@ -501,7 +498,7 @@ export default function StaffReservations() {
                           busy={busyId === r.id}
                           waHref={waLink(r)}
                           onConfirm={() => handleConfirm(r)}
-                          onComplete={() => patch(r, { status: 'completed' }, 'تم تسجيل الجلسة كمنتهية')}
+                          onComplete={() => setClosing(r)}
                           onCancel={() => handleCancel(r)}
                           onEdit={() => openEdit(r)}
                           onDelete={() => handleDelete(r)}
@@ -614,67 +611,33 @@ export default function StaffReservations() {
             </Field>
           )}
 
-          {/* Service + pulses + price */}
-          <Field label="الخدمة" required error={errors.service_id?.message}>
+          {/* Service — the listed rate is shown for reference, never as an input */}
+          <Field
+            label="الخدمة"
+            required
+            error={errors.service_id?.message}
+            hint={
+              selectedService
+                ? perPulseOf(selectedService) > 0
+                  ? `${formatMoney(selectedService.price_per_pulse)} للنبضة — الإجمالي بيتحسب بعد الجلسة`
+                  : `سعر ثابت ${formatMoney(selectedService.price)}`
+                : undefined
+            }
+          >
             <Select
-              {...register('service_id', {
-                required: 'اختاري الخدمة',
-                onChange: () => setPriceTouched(false),
-              })}
+              {...register('service_id', { required: 'اختاري الخدمة' })}
               invalid={!!errors.service_id}
             >
               <option value="">اختاري الخدمة...</option>
               {services.map(s => (
                 <option key={s.id} value={s.id}>
-                  {s.name} — {toNumber(s.price_per_pulse) > 0
+                  {s.name} — {perPulseOf(s) > 0
                     ? `${formatMoney(s.price_per_pulse)} / نبضة`
                     : formatMoney(s.price)}
                 </option>
               ))}
             </Select>
           </Field>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field
-              label="عدد النبضات"
-              error={errors.pulses?.message}
-              hint={isPerPulse ? `${formatMoney(perPulse)} للنبضة الواحدة` : 'اختياري — للتوثيق الطبي'}
-            >
-              <Input
-                {...register('pulses', {
-                  min: { value: 0, message: 'العدد لازم يكون موجب' },
-                  // Changing the count re-opens auto-pricing, even while editing
-                  // a booking whose price was already locked.
-                  onChange: () => setPriceTouched(false),
-                })}
-                invalid={!!errors.pulses}
-                type="number"
-                inputMode="numeric"
-                min={0}
-                placeholder="0"
-              />
-            </Field>
-            <Field
-              label="الإجمالي (جنيه)"
-              required
-              error={errors.price_at_booking?.message}
-              hint={priceTouched ? 'اتعدّل يدوي' : 'بيتحسب أوتوماتيك'}
-            >
-              <Input
-                {...register('price_at_booking', {
-                  required: 'اكتبي الإجمالي',
-                  min: { value: 0, message: 'المبلغ لازم يكون موجب' },
-                  onChange: () => setPriceTouched(true),
-                })}
-                invalid={!!errors.price_at_booking}
-                type="number"
-                inputMode="numeric"
-                min={0}
-                dir="ltr"
-                className="font-semibold"
-              />
-            </Field>
-          </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="التاريخ" required error={errors.date?.message}>
@@ -723,6 +686,13 @@ export default function StaffReservations() {
         </form>
       </Modal>
 
+      <CloseSessionSheet
+        reservation={closing}
+        service={closing ? serviceMap[closing.service_id] : null}
+        onClose={() => setClosing(null)}
+        onSaved={() => { setClosing(null); reload() }}
+      />
+
       {dialog}
     </div>
   )
@@ -736,6 +706,10 @@ const emptyTitles: Record<TabKey, string> = {
 }
 
 function PaymentCell({ r }: { r: Reservation }) {
+  // Nothing is owed until the session has been priced — showing "لسه مدفعش"
+  // before that reads as a debt the client doesn't have yet.
+  if (!isPriced(r)) return <span className="text-xs text-gray-400 whitespace-nowrap">—</span>
+
   const paid = toNumber(r.paid_amount)
   const total = toNumber(r.price_at_booking)
   const status = r.payment_status ?? (paid <= 0 ? 'unpaid' : paid < total ? 'partial' : 'paid')
@@ -764,14 +738,16 @@ function RowActions({ r, busy, waHref, onConfirm, onComplete, onCancel, onEdit, 
   const canConfirm = r.status === 'pending'
   const canComplete = r.status === 'confirmed' || r.status === 'pending'
   const closed = r.status === 'completed' || r.status === 'cancelled'
+  // A finished-but-unpriced session still owes us its pulse count.
+  const needsPricing = r.status === 'completed' && !isPriced(r)
 
   return (
     <div className="flex gap-1.5 justify-end flex-wrap">
       {canConfirm && (
         <Button size="sm" variant="success" onClick={onConfirm} disabled={busy}>تأكيد</Button>
       )}
-      {canComplete && (
-        <Button size="sm" onClick={onComplete} disabled={busy}>تمت</Button>
+      {(canComplete || needsPricing) && (
+        <Button size="sm" onClick={onComplete} disabled={busy}>إنهاء الجلسة</Button>
       )}
       {waHref && (
         <a
@@ -821,7 +797,11 @@ function ReservationCard({
         <Info label="التاريخ" value={formatDateShort(r.date)} />
         <Info label="الوقت" value={formatTime(r.time)} />
         {r.pulses ? <Info label="النبضات" value={`${r.pulses} نبضة`} /> : null}
-        <Info label="الإجمالي" value={formatMoney(r.price_at_booking)} strong />
+        <Info
+          label="الإجمالي"
+          value={isPriced(r) ? formatMoney(r.price_at_booking) : 'لسه متسعّرتش'}
+          strong={isPriced(r)}
+        />
       </div>
 
       <div className="mb-3"><PaymentCell r={r} /></div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { createReservation } from '../services/firestore'
 import { normalizePhone, validateEgyptianPhone } from '../utils/validators'
-import { todayISO, toNumber } from '../utils/formatters'
+import { todayISO } from '../utils/formatters'
 import { messageFor } from '../hooks/useLoader'
 
 interface Service {
@@ -91,7 +91,9 @@ export default function PublicBookingModal({ service, onClose }: Props) {
         service_name: service?.name ?? null,
         pulses: null,
         price_per_pulse: null,
-        price_at_booking: toNumber(service?.price),
+        // Priced after the session, once the pulse count is known
+        price_at_booking: 0,
+        priced_at: null,
         paid_amount: 0,
         payment_status: 'unpaid',
         date: form.date,

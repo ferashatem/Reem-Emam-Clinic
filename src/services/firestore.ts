@@ -303,6 +303,67 @@ export async function createPayment(data: DocumentData) {
   return paymentRef
 }
 
+/**
+ * Closes a session: the pulse count, the price it produced, and the money the
+ * client handed over — all in one transaction.
+ *
+ * These three facts are learnt in the same breath at the end of a session, and
+ * they have to land together: pricing without the payment leaves a booking that
+ * looks unpaid, and `createPayment` can't be reused here because it reads the
+ * total off the booking, which we're changing in the same write.
+ */
+export async function closeSession(input: {
+  reservationId: string
+  pulses: number | null
+  /** Final agreed total, after any discount the assistant typed. */
+  total: number
+  payment: { amount: number; method: string; note?: string; date?: string } | null
+  staff: { id: string; name: string }
+  clientId: string
+  clientName: string
+}) {
+  const total = toNumber(input.total)
+  const amount = toNumber(input.payment?.amount)
+  const date = input.payment?.date || todayISO()
+  const resRef = doc(db, 'reservations', input.reservationId)
+  const paymentRef = amount > 0 ? doc(collection(db, 'payments')) : null
+
+  await runTransaction(db, async (tx) => {
+    const resSnap = await tx.get(resRef)
+    if (!resSnap.exists()) throw new Error('الحجز ده مش موجود')
+
+    // Any earlier money (a deposit, a first instalment) stays counted.
+    const alreadyPaid = toNumber((resSnap.data() as Reservation).paid_amount)
+    const paid = alreadyPaid + amount
+
+    tx.update(resRef, {
+      pulses: input.pulses,
+      price_at_booking: total,
+      priced_at: now(),
+      status: 'completed',
+      paid_amount: paid,
+      payment_status: paymentStatusFor(paid, total),
+    })
+
+    if (paymentRef) {
+      tx.set(paymentRef, {
+        client_id: input.clientId,
+        client_name: input.clientName,
+        reservation_id: input.reservationId,
+        amount,
+        method: input.payment!.method,
+        note: input.payment!.note ?? '',
+        date,
+        month: monthKey(date),
+        staff_id: input.staff.id,
+        staff_name: input.staff.name,
+        created_at: now(),
+        deleted_at: null,
+      })
+    }
+  })
+}
+
 /** Soft-deletes a payment and rolls its amount back off the reservation. */
 export async function softDeletePayment(id: string) {
   const paymentRef = doc(db, 'payments', id)

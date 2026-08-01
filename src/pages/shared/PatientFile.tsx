@@ -19,6 +19,7 @@ import {
   formatDateShort, formatDateAr, formatMoney, formatTime, toNumber, toDate,
 } from '../../utils/formatters'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
+import { isPriced } from '../../utils/pricing'
 import { C } from '../../theme'
 import type { Client, Payment, Reservation, SessionReport } from '../../types'
 
@@ -277,7 +278,7 @@ function VisitCard({ visit, index, defaultOpen }: { visit: Visit; index: number;
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className="font-semibold text-sm">{r.service_name || 'خدمة'}</span>
             <StatusBadge status={r.status} />
-            <StatusBadge status={paymentStatus} />
+            {isPriced(r) && <StatusBadge status={paymentStatus} />}
           </div>
           <p className="text-xs text-gray-500">
             {formatDateAr(r.date)} · {formatTime(r.time)}
@@ -286,7 +287,9 @@ function VisitCard({ visit, index, defaultOpen }: { visit: Visit; index: number;
         </div>
 
         <div className="text-end shrink-0">
-          <p className="font-bold text-sm" style={{ color: C.primary }}>{formatMoney(total)}</p>
+          <p className="font-bold text-sm" style={{ color: C.primary }}>
+            {isPriced(r) ? formatMoney(total) : '—'}
+          </p>
           <p className="text-xs text-gray-400">{open ? '▲' : '▼'}</p>
         </div>
       </button>
