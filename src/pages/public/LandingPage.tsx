@@ -3,7 +3,6 @@ import '../../App.css'
 import Navbar from '../../components/Navbar'
 import Hero from '../../components/Hero'
 import Ribbon from '../../components/Ribbon'
-import Gallery from '../../components/Gallery'
 import Testimonials from '../../components/Testimonials'
 import Booking from '../../components/Booking'
 import Footer from '../../components/Footer'
@@ -65,7 +64,6 @@ export default function LandingPage() {
       <main className="lp-main">
         <Hero />
         <Ribbon />
-        <Gallery />
         <Testimonials />
         <Booking />
       </main>

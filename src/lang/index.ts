@@ -1,5 +1,10 @@
 export type Lang = "ar" | "en";
 
+/** The street address stays in Arabic in both languages — it is how the place
+ *  is actually signposted, and a visitor reads it off the building either way. */
+const ADDRESS =
+  "بني سويف الجديدة - برج اللؤلؤة، الدور الأول علوي بجوار فيلمنج للبصريات";
+
 export const t = {
   ar: {
     dir: "rtl" as const,
@@ -192,7 +197,7 @@ export const t = {
       name: "الاسم الكامل",
       namePh: "اكتبي اسمك هنا",
       phone: "رقم الجوال",
-      phonePh: "+966 5X XXX XXXX",
+      phonePh: "01X XXXX XXXX",
       service: "الخدمة المطلوبة",
       servicePh: "اختاري الخدمة",
       date: "التاريخ المفضّل",
@@ -213,10 +218,7 @@ export const t = {
         "سنتواصل معك قريباً لتأكيد موعدك.\nشكراً لثقتك بريم غلو هاوس ✦",
       contacts: {
         phone: { label: "اتصلي بنا", value: "+201019191995" },
-        location: {
-          label: "موقعنا",
-          value: "الرياض، المملكة العربية السعودية",
-        },
+        location: { label: "موقعنا", value: ADDRESS },
         instagram: { label: "انستغرام", value: "reem.emam.clinic@gmail.com" },
       },
     },
@@ -233,7 +235,7 @@ export const t = {
   en: {
     dir: "ltr" as const,
     nav: {
-      brand: "Reem Glow House",
+      brand: "Dr Reem Emam",
       about: "About",
       services: "Services",
       gallery: "Our Space",
@@ -251,7 +253,7 @@ export const t = {
       "A Glow That Lasts",
     ],
     hero: {
-      brand: "Reem Glow House",
+      brand: "Dr Reem Emam",
       headline: "The Ultimate Solution",
       headlineB: "for Radiant, Healthy Skin",
       sub: "Beauty & Glow Clinic",
@@ -269,7 +271,7 @@ export const t = {
       label: "Our Story",
       title: "Where Beauty Meets",
       titleB: "Genuine Care",
-      p1: "At Reem Glow House, we believe every skin holds a unique beauty that deserves attention and care. We offer a complete experience blending the latest skincare techniques with the finest global products, in an atmosphere that radiates elegance and warmth.",
+      p1: "At Dr Reem Emam, we believe every skin holds a unique beauty that deserves attention and care. We offer a complete experience blending the latest skincare techniques with the finest global products, in an atmosphere that radiates elegance and warmth.",
       p2: "Our team of certified specialists designs personalized treatment plans for every client, ensuring natural, lasting results that boost your confidence and ignite your inner glow.",
       p3: "Half our space is for beauty, the other half for comfort — because true radiance doesn't begin only from the skin, but from feeling genuinely cared for.",
       quote:
@@ -377,7 +379,7 @@ export const t = {
           init: "N",
           label: "Regular Client",
           rating: "4.9",
-          text: '"The best skincare place! The ambiance is stunning and the products are luxurious. I always feel like royalty when I leave Reem Glow House."',
+          text: '"The best skincare place! The ambiance is stunning and the products are luxurious. I always feel like royalty when I leave Dr Reem Emam."',
         },
         {
           name: "Lama Al-Shahri",
@@ -391,14 +393,14 @@ export const t = {
           init: "R",
           label: "Loyal Client",
           rating: "4.8",
-          text: '"I discovered Reem Glow House a year ago and haven\'t been anywhere else since. The personalized care plan truly transformed my skin."',
+          text: '"I discovered Dr Reem Emam a year ago and haven\'t been anywhere else since. The personalized care plan truly transformed my skin."',
         },
         {
           name: "Hanoof Al-Qahtani",
           init: "H",
           label: "Valued Client",
           rating: "5.0",
-          text: '"Laser was my first experience and I was nervous, but the specialists reassured me and the results were amazing. Thank you Reem Glow House!"',
+          text: '"Laser was my first experience and I was nervous, but the specialists reassured me and the results were amazing. Thank you Dr Reem Emam!"',
         },
         {
           name: "Dana Al-Salem",
@@ -421,7 +423,7 @@ export const t = {
       name: "Full Name",
       namePh: "Enter your name",
       phone: "Phone Number",
-      phonePh: "+966 5X XXX XXXX",
+      phonePh: "01X XXXX XXXX",
       service: "Service",
       servicePh: "Choose a service",
       date: "Preferred Date",
@@ -439,21 +441,20 @@ export const t = {
       submit: "Book Your Session Now",
       successTitle: "Booking Received!",
       successSub:
-        "We will contact you soon to confirm your appointment.\nThank you for choosing Reem Glow House ✦",
+        "We will contact you soon to confirm your appointment.\nThank you for choosing Dr Reem Emam ✦",
       contacts: {
         phone: { label: "Call Us", value: "+201019191995" },
-        location: { label: "Location", value: `بني سويف الجديدة - برج اللؤلؤة
-الدور الأول علوي بجوار فيلمنج للبصريات` },
+        location: { label: "Location", value: ADDRESS },
         instagram: { label: "Instagram", value: "reem.emam.clinic@gmail.com" },
       },
     },
     footer: {
-      brand: "Reem Glow House",
+      brand: "Dr Reem Emam",
       tag: "Your partner toward healthy, radiant skin",
       getStarted: "Book Now",
       servicesTitle: "Services",
       contactTitle: "Contact Us",
-      copy: "All Rights Reserved © 2025 Reem Glow House",
+      copy: "All Rights Reserved © 2025 Dr Reem Emam",
     },
   },
 };

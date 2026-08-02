@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { useLang } from '../context/LangContext'
-import { photos } from '../assets/clinic'
+import { galleryOrder } from '../assets/clinic'
 
 /**
  * Splits a line into words so each one can rise out of its own mask.
@@ -29,8 +29,15 @@ export default function Hero() {
 
   return (
     <section id="hero" className="hero">
+      {/* The four interior shots pan across the backdrop on a loop. The first
+          one is repeated at the tail so the jump back to the start lands on an
+          identical frame and never reads as a rewind. */}
       <div className="hero__media">
-        <img src={photos.reception} alt="" fetchPriority="high" />
+        <div className="hero__slides">
+          {[...galleryOrder, galleryOrder[0]].map((src, i) => (
+            <img key={i} src={src} alt="" fetchPriority={i === 0 ? 'high' : 'low'} />
+          ))}
+        </div>
       </div>
       <div className="hero__grain" />
       <div className="hero__frame" />
@@ -62,7 +69,7 @@ export default function Hero() {
         </div>
       </div>
 
-      <a href="#gallery" className="hero__scroll" aria-label={h.scroll}>
+      <a href="#testimonials" className="hero__scroll" aria-label={h.scroll}>
         <span>{h.scroll}</span>
         <span className="track" />
       </a>
