@@ -12,7 +12,9 @@ interface LangCtx {
 const LangContext = createContext<LangCtx | null>(null)
 
 export function LangProvider({ children }: { children: ReactNode }) {
-  const [lang, setLang] = useState<Lang>('ar')
+  // Every visit opens in English, on every device — the switch is a deliberate
+  // choice the visitor makes, not something the browser guesses for them.
+  const [lang, setLang] = useState<Lang>('en')
 
   useEffect(() => {
     const tr = t[lang]

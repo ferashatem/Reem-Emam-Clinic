@@ -122,9 +122,9 @@ export default function App() {
               <Route index element={<Navigate to="clinic-day" replace />} />
               <Route path="clinic-day" element={<ClinicDay />} />
               <Route path="reservations" element={<Reservations />} />
-              <Route path="payments" element={<Payments />} />
-              {/* Old links kept working */}
-              <Route path="collections" element={<Navigate to="/staff/payments" replace />} />
+              {/* The assistant takes money from the close-session sheet on
+                  «يوم العيادة», so there is no payments screen here — old
+                  bookmarks fall through to the catch-all below. */}
               <Route path="*" element={<Navigate to="/staff/clinic-day" replace />} />
             </Route>
 

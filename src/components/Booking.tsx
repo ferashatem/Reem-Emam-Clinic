@@ -3,7 +3,8 @@ import toast from 'react-hot-toast'
 import { createReservation, getActiveServices } from '../services/firestore'
 import { getBusySlots } from '../services/availability'
 import { normalizePhone } from '../utils/validators'
-import { toNumber, todayISO } from '../utils/formatters'
+import { todayISO } from '../utils/formatters'
+import { messageFor } from '../hooks/useLoader'
 import { CLINIC_SLOTS, isSlotPast, slotOf } from '../utils/slots'
 import { useLang } from '../context/LangContext'
 import { AtIcon, PhoneIcon } from './brand/SocialIcons'
@@ -103,7 +104,11 @@ export default function Booking() {
         service_name: service?.name ?? null,
         pulses: null,
         price_per_pulse: null,
-        price_at_booking: toNumber(service?.price),
+        // Priced after the session, once the pulse count is known. Sending the
+        // service's list price here is also refused outright by the security
+        // rules — a request from the public site may never carry a total.
+        price_at_booking: 0,
+        priced_at: null,
         paid_amount: 0,
         payment_status: 'unpaid',
         date,
@@ -118,8 +123,10 @@ export default function Booking() {
       setDate('')
       setTime('')
       setTimeout(() => setSuccess(false), 5500)
-    } catch {
-      toast.error('حدث خطأ، حاولي مرة أخرى')
+    } catch (err) {
+      // The bare "something went wrong" hid a rules rejection for good; this
+      // reports what actually failed, same as every other form in the app.
+      toast.error(messageFor(err))
     } finally {
       setLoading(false)
     }

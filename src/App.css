@@ -2115,31 +2115,21 @@ body.landing-page ::-webkit-scrollbar-thumb {
   .form-row {
     grid-template-columns: 1fr;
   }
+  /* The three claims and the scroll cue both broke onto ragged rows over the
+     photo and said nothing the copy above them had not. Gone on a phone, and
+     the two buttons drop into the room they leave. */
+  .hero__stats,
+  .hero__scroll {
+    display: none;
+  }
   .hero__actions {
     width: 100%;
     gap: 0.7rem;
+    margin-top: clamp(1.4rem, 5vh, 3rem);
   }
   .hero__actions .btn {
     flex: 1 1 100%;
-    padding: 0.92rem 1.6rem;
-  }
-  .hero__stat + .hero__stat::before {
-    display: none;
-  }
-  .hero__stat + .hero__stat {
-    padding-inline-start: 0;
-  }
-  /* two per row instead of three tiny columns, and tighter so the whole hero
-     still ends at the fold on a phone */
-  .hero__stats {
-    gap: 1.1rem 1.8rem;
-  }
-  .hero__stat {
-    flex: 1 1 42%;
-  }
-  .hero__stat .l {
-    margin-top: 0.28rem;
-    font-size: 0.74rem;
+    padding: 1rem 1.6rem;
   }
   .hero__text {
     line-height: 1.75;
