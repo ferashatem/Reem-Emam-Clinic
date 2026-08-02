@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useLang } from '../context/LangContext'
 import BrandMark from './brand/BrandMark'
-import { FacebookIcon, InstagramIcon, WhatsAppIcon } from './brand/SocialIcons'
+import { AtIcon, FacebookIcon, InstagramIcon, MapPinIcon, PhoneIcon, WhatsAppIcon } from './brand/SocialIcons'
 
 export default function Footer() {
   const { tr, lang } = useLang()
@@ -30,39 +30,33 @@ export default function Footer() {
         </div>
 
         <div className="foot__col">
-          <h4>{f.linksTitle}</h4>
-          <ul>
-            <li><a href="#about">{tr.nav.about}</a></li>
-            <li><Link to="/services">{tr.nav.services}</Link></li>
-            <li><a href="#gallery">{tr.nav.gallery}</a></li>
-            <li><a href="#why-us">{tr.nav.why}</a></li>
-            <li><a href="#testimonials">{tr.nav.reviews}</a></li>
-            <li><a href="#booking">{tr.nav.cta}</a></li>
-          </ul>
-        </div>
-
-        <div className="foot__col">
           <h4>{f.servicesTitle}</h4>
           <ul>
             {tr.services.items.slice(0, 5).map(s => (
-              <li key={s.name}><a href="#services">{s.name}</a></li>
+              <li key={s.name}><Link to="/services">{s.name}</Link></li>
             ))}
           </ul>
         </div>
 
         <div className="foot__col">
           <h4>{f.contactTitle}</h4>
-          <ul>
-            <li><a href="tel:+966500000000">{tr.booking.contacts.phone.value}</a></li>
-            <li><a href="https://instagram.com" target="_blank" rel="noreferrer">{tr.booking.contacts.instagram.value}</a></li>
+          <ul className="foot__contacts">
+            <li>
+              <a href="tel:+966500000000">
+                <span className="ico"><PhoneIcon /></span>{tr.booking.contacts.phone.value}
+              </a>
+            </li>
+            <li>
+              <a href="https://instagram.com" target="_blank" rel="noreferrer">
+                <span className="ico"><AtIcon /></span>{tr.booking.contacts.instagram.value}
+              </a>
+            </li>
+            <li>
+              <span className="foot__contact">
+                <span className="ico"><MapPinIcon /></span>{tr.booking.contacts.location.value}
+              </span>
+            </li>
           </ul>
-          <p className="foot__tag" style={{ marginTop: '0.9rem' }}>{tr.booking.contacts.location.value}</p>
-
-          <h4 style={{ marginTop: '1.6rem' }}>{f.newsTitle}</h4>
-          <form className="foot__news" onSubmit={e => e.preventDefault()}>
-            <input type="email" placeholder={f.newsPh} aria-label={f.newsPh} />
-            <button type="submit" className="btn btn--light btn--sm"><span>{f.subscribe}</span></button>
-          </form>
         </div>
       </div>
 

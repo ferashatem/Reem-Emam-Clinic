@@ -171,8 +171,6 @@ export default function ClinicDay() {
   // firestore.rules only lets the partners write session_reports — showing the
   // assistant a button that always fails on permissions would be a dead end.
   const canWriteReports = userProfile?.role !== 'staff'
-  /** The assistant's job here is the money; pricing belongs to the doctor. */
-  const collecting = userProfile?.role === 'staff'
   const [reportFor, setReportFor] = useState<Reservation | null>(null)
 
   function afterReport() {
@@ -248,7 +246,6 @@ export default function ClinicDay() {
                 key={selected.id}
                 r={selected}
                 service={serviceFor(selected)}
-                collecting={collecting}
                 turn={turnOf(selected)}
                 base={base}
                 busy={busy}
@@ -280,11 +277,6 @@ export default function ClinicDay() {
               {formatMoney(debtsTotal)}
             </span>
           </div>
-          {!collecting && (
-            <p className="text-xs text-gray-400 mb-3 px-1">
-              الأسيستانت هي اللي بتحصّل وتقفل الدفع — ده للمتابعة بس.
-            </p>
-          )}
 
           <div className="space-y-2.5">
             {debts.map(r => (
@@ -310,9 +302,7 @@ export default function ClinicDay() {
                 </div>
 
                 <div className="flex gap-2 shrink-0">
-                  {collecting && (
-                    <Button size="sm" onClick={() => setClosing(r)} disabled={busy}>تحصيل</Button>
-                  )}
+                  <Button size="sm" onClick={() => setClosing(r)} disabled={busy}>تحصيل</Button>
                   <Link
                     to={`${base}/patients/${r.client_id}`}
                     className="px-4 py-2 rounded-xl text-sm font-medium border bg-white"
@@ -421,8 +411,6 @@ function QueueRow({
 interface PanelProps {
   r: Reservation
   service?: Service | null
-  /** The assistant takes money; the doctor records pulses. Drives the CTA. */
-  collecting: boolean
   turn: Turn
   base: string
   busy: boolean
@@ -440,7 +428,7 @@ interface PanelProps {
 }
 
 function PatientPanel({
-  r, service, collecting, turn, base, busy, loading, error, onRetry,
+  r, service, turn, base, busy, loading, error, onRetry,
   client, visits, reports, payments, onConfirm, onClose, onReport,
 }: PanelProps) {
   const priced = isPriced(r)
@@ -556,14 +544,14 @@ function PatientPanel({
           <div className="space-y-2 pt-1">
             <Button
               onClick={onClose}
-              disabled={busy || (collecting && !priced)}
+              disabled={busy}
               className="w-full py-3.5! text-base!"
             >
-              {collecting
-                ? priced
-                  ? due > 0 ? `💰 تحصيل ${formatMoney(due)}` : '✓ اتدفعت بالكامل'
-                  : '⏳ مستنية الدكتورة تسجّل النبضات'
-                : priced ? '✏️ تعديل النبضات والسعر' : '✅ إنهاء الجلسة وتسجيل النبضات'}
+              {!priced
+                ? '✅ إنهاء الجلسة وتسجيل النبضات'
+                : due > 0
+                  ? `💰 تحصيل ${formatMoney(due)}`
+                  : '✏️ تعديل الجلسة'}
             </Button>
 
             <div className="flex flex-wrap gap-2">

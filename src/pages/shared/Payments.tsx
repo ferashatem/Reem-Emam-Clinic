@@ -1,21 +1,17 @@
 import { useMemo, useState } from 'react'
-import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
-  getPayments, createPayment, softDeletePayment, getReservations, getClients,
-  getActiveServices,
+  getPayments, softDeletePayment, getReservations, getClients, getActiveServices,
 } from '../../services/firestore'
-import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
 import { useConfirm } from '../../components/ui/ConfirmDialog'
-import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatCard from '../../components/ui/StatCard'
 import Tabs from '../../components/ui/Tabs'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
-import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
+import { Button } from '../../components/ui/Form'
 import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber,
 } from '../../utils/formatters'
@@ -32,25 +28,8 @@ const methods: { value: PaymentMethod; label: string }[] = [
 
 const methodLabel = (m?: string) => methods.find(x => x.value === m)?.label ?? m ?? '—'
 
-interface PaymentForm {
-  reservation_id: string
-  client_id: string
-  amount: string
-  method: PaymentMethod
-  date: string
-  note: string
-}
-
 export default function Payments() {
-  const { userProfile } = useAuth()
   const { confirm, dialog } = useConfirm()
-
-  /**
-   * The assistant books and collects, but the clinic's takings aren't hers to
-   * see — so the month's revenue and the full collections history stay with the
-   * partners. She still gets today's drawer and what's owed, to do her job.
-   */
-  const isAssistant = userProfile?.role === 'staff'
 
   const { data, loading, error, reload } = useLoader(async () => {
     const [payments, reservations, clients, services] = await Promise.all([
@@ -65,9 +44,7 @@ export default function Payments() {
   const services = useMemo(() => data?.services ?? [], [data])
 
   const [tab, setTab] = useState<'today' | 'all'>('today')
-  const [modalOpen, setModalOpen] = useState(false)
   const [closing, setClosing] = useState<Reservation | null>(null)
-  const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const clientMap = useMemo(
@@ -102,7 +79,7 @@ export default function Payments() {
   )
 
   const todayPayments = useMemo(() => payments.filter(p => p.date === today), [payments, today])
-  const visible = tab === 'today' || isAssistant ? todayPayments : payments
+  const visible = tab === 'today' ? todayPayments : payments
 
   const totals = useMemo(() => ({
     today: todayPayments.reduce((s, p) => s + toNumber(p.amount), 0),
@@ -112,80 +89,8 @@ export default function Payments() {
     due: awaitingPayment.reduce((s, r) => s + dueOf(r), 0),
   }), [todayPayments, payments, awaitingPayment, today])
 
-  // ─── Form ─────────────────────────────────────────────────────────────────
-  const { register, handleSubmit, reset, watch, setValue, formState: { errors } } =
-    useForm<PaymentForm>()
-
-  const [sessionSearch, setSessionSearch] = useState('')
-  const watchedResId = watch('reservation_id')
-  const linkedReservation = reservations.find(r => r.id === watchedResId)
-  const remaining = linkedReservation ? dueOf(linkedReservation) : 0
-
   function nameOf(r: Reservation) {
     return r.client_name || clientMap[r.client_id]?.name || 'عميلة محذوفة'
-  }
-
-  /** A searchable short list beats a select holding every booking ever made. */
-  const matchingSessions = useMemo(() => {
-    const q = sessionSearch.trim().toLowerCase()
-    return reservations
-      .filter(r => r.status !== 'cancelled')
-      .filter(r => !q ||
-        nameOf(r).toLowerCase().includes(q) ||
-        (r.client_phone ?? '').includes(q))
-      .slice(0, 25)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reservations, sessionSearch, clientMap])
-
-  /** Blank when the session has no price yet — it has to be closed first. */
-  function remainingOf(r: Reservation) {
-    return isPriced(r) ? String(dueOf(r)) : ''
-  }
-
-  function openFor(r?: Reservation) {
-    setSessionSearch(r ? nameOf(r) : '')
-    reset({
-      reservation_id: r?.id ?? '',
-      client_id: r?.client_id ?? '',
-      amount: r ? remainingOf(r) : '',
-      method: 'cash',
-      date: todayISO(),
-      note: '',
-    })
-    setModalOpen(true)
-  }
-
-  /** Picking a session fills in who's paying and how much is left. */
-  function onReservationChange(id: string) {
-    const r = reservations.find(x => x.id === id)
-    if (!r) return
-    setValue('client_id', r.client_id)
-    setValue('amount', remainingOf(r))
-  }
-
-  async function onSubmit(values: PaymentForm) {
-    setSaving(true)
-    try {
-      const client = clientMap[values.client_id]
-      await createPayment({
-        client_id: values.client_id,
-        client_name: client?.name ?? '',
-        reservation_id: values.reservation_id || null,
-        amount: toNumber(values.amount),
-        method: values.method,
-        note: values.note?.trim() ?? '',
-        date: values.date || todayISO(),
-        staff_id: userProfile?.uid ?? '',
-        staff_name: userProfile?.name ?? '',
-      })
-      toast.success('تم تسجيل الدفع 💰')
-      setModalOpen(false)
-      reload()
-    } catch (err) {
-      toast.error(messageFor(err))
-    } finally {
-      setSaving(false)
-    }
   }
 
   async function handleDelete(p: Payment) {
@@ -212,13 +117,12 @@ export default function Payments() {
     <div>
       <PageHeader
         title="الدفع والتحصيلات"
-        subtitle="سجّلي كل مبلغ بيتدفع بعد الجلسة"
-        action={<Button className="w-full sm:w-auto" onClick={() => openFor()}>+ تسجيل دفعة</Button>}
+        subtitle="اقفلي الجلسة وسجّلي النبضات — السعر والدفع بيتسجلوا مع بعض"
       />
 
-      <div className={`grid grid-cols-2 ${isAssistant ? '' : 'lg:grid-cols-3'} gap-3 sm:gap-4 mb-6`}>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 mb-6">
         <StatCard label="تحصيل النهاردة" value={formatMoney(totals.today)} icon="💰" color={C.green} />
-        {!isAssistant && <StatCard label="تحصيل الشهر" value={formatMoney(totals.month)} icon="📆" />}
+        <StatCard label="تحصيل الشهر" value={formatMoney(totals.month)} icon="📆" />
         <StatCard
           label="مستحق على العملاء"
           value={formatMoney(totals.due)}
@@ -277,9 +181,9 @@ export default function Payments() {
                           </p>
                         )}
                       </div>
-                      {/* An unpriced session can't take a payment against a
-                          total it doesn't have — close it instead. */}
-                      <Button size="sm" onClick={() => (unpriced ? setClosing(r) : openFor(r))}>
+                      {/* One sheet does both: the pulses set the price, and the
+                          money is taken against it in the same step. */}
+                      <Button size="sm" onClick={() => setClosing(r)}>
                         {unpriced ? 'إنهاء الجلسة' : 'استلام'}
                       </Button>
                     </div>
@@ -288,35 +192,28 @@ export default function Payments() {
               </div>
               {awaitingPayment.length > 12 && (
                 <p className="text-xs text-gray-400 mt-3">
-                  و {awaitingPayment.length - 12} جلسة تانية — سجّليها من زرار "تسجيل دفعة"
+                  و {awaitingPayment.length - 12} جلسة تانية — هتلاقيها في «يوم العيادة» بتاريخها
                 </p>
               )}
             </section>
           )}
 
           <div className="mb-4">
-            {isAssistant ? (
-              <h2 className="text-sm font-bold" style={{ color: C.primary }}>
-                تحصيلات النهاردة ({todayPayments.length})
-              </h2>
-            ) : (
-              <Tabs
-                tabs={[
-                  { value: 'today' as const, label: 'تحصيلات النهاردة', count: todayPayments.length },
-                  { value: 'all' as const, label: 'كل التحصيلات', count: payments.length },
-                ]}
-                value={tab}
-                onChange={setTab}
-              />
-            )}
+            <Tabs
+              tabs={[
+                { value: 'today' as const, label: 'تحصيلات النهاردة', count: todayPayments.length },
+                { value: 'all' as const, label: 'كل التحصيلات', count: payments.length },
+              ]}
+              value={tab}
+              onChange={setTab}
+            />
           </div>
 
           {visible.length === 0 ? (
             <EmptyState
               icon="💰"
               title={tab === 'today' ? 'مفيش تحصيلات النهاردة' : 'مفيش تحصيلات مسجلة'}
-              description="سجّلي المبلغ اللي العميلة دفعته بعد ما تخلص جلستها"
-              action={<Button onClick={() => openFor()}>+ تسجيل دفعة</Button>}
+              description="اقفلي الجلسة من «مستنية الدفع» فوق — المبلغ بيتسجل مع النبضات"
             />
           ) : (
             <>
@@ -390,121 +287,6 @@ export default function Payments() {
           )}
         </>
       )}
-
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل دفعة" width="max-w-lg">
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-          <Field
-            label="الجلسة"
-            hint="اختاري الجلسة عشان المبلغ يتربط بيها في الحسابات — أو سيبيها فاضية لدفعة عامة"
-          >
-            <div className="space-y-2">
-              <Input
-                value={sessionSearch}
-                onChange={e => setSessionSearch(e.target.value)}
-                placeholder="ابحثي بالاسم أو رقم التليفون..."
-              />
-              <input type="hidden" {...register('reservation_id')} />
-              <div
-                className="max-h-52 overflow-y-auto rounded-xl border divide-y"
-                style={{ borderColor: C.primarySoft }}
-              >
-                <button
-                  type="button"
-                  onClick={() => { setValue('reservation_id', ''); setValue('amount', '') }}
-                  className="w-full text-start px-4 py-3 text-sm transition-colors"
-                  style={!watchedResId
-                    ? { backgroundColor: C.primary, color: '#fff' }
-                    : { backgroundColor: '#fff' }}
-                >
-                  — دفعة مش مرتبطة بجلسة —
-                </button>
-                {matchingSessions.map(r => (
-                  <button
-                    key={r.id}
-                    type="button"
-                    onClick={() => { setValue('reservation_id', r.id); onReservationChange(r.id) }}
-                    className="w-full text-start px-4 py-3 transition-colors"
-                    style={watchedResId === r.id
-                      ? { backgroundColor: C.primary, color: '#fff' }
-                      : { backgroundColor: '#fff' }}
-                  >
-                    <span className="text-sm font-medium block">{nameOf(r)}</span>
-                    <span className="text-xs opacity-70 block">
-                      {formatDateShort(r.date)} · {formatTime(r.time)} ·{' '}
-                      {isPriced(r) ? formatMoney(r.price_at_booking) : 'لسه متسعّرتش'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </Field>
-
-          {linkedReservation && (
-            <div className="rounded-xl p-3 text-sm" style={{ backgroundColor: C.bg }}>
-              {!isPriced(linkedReservation) ? (
-                <p className="text-xs leading-relaxed" style={{ color: C.primary }}>
-                  الجلسة دي لسه متسعّرتش — عدد النبضات بيتعرف بعد الجلسة.
-                  الأحسن تقفليها من زرار «إنهاء الجلسة»، وساعتها السعر والدفع بيتسجلوا مع بعض.
-                </p>
-              ) : (
-                <>
-                  <div className="flex justify-between mb-1">
-                    <span className="text-gray-500">إجمالي الجلسة</span>
-                    <span className="font-medium">{formatMoney(linkedReservation.price_at_booking)}</span>
-                  </div>
-                  <div className="flex justify-between mb-1">
-                    <span className="text-gray-500">مدفوع قبل كده</span>
-                    <span className="font-medium">{formatMoney(linkedReservation.paid_amount)}</span>
-                  </div>
-                  <div className="flex justify-between font-bold" style={{ color: C.primary }}>
-                    <span>المتبقي</span>
-                    <span>{formatMoney(remaining)}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          <Field label="العميلة" required error={errors.client_id?.message}>
-            <Select {...register('client_id', { required: 'اختاري العميلة' })} invalid={!!errors.client_id}>
-              <option value="">اختاري العميلة...</option>
-              {clients.map(c => <option key={c.id} value={c.id}>{c.name} — {c.phone}</option>)}
-            </Select>
-          </Field>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="المبلغ (جنيه)" required error={errors.amount?.message}>
-              <Input
-                {...register('amount', {
-                  required: 'اكتبي المبلغ',
-                  validate: v => toNumber(v) > 0 || 'المبلغ لازم يكون أكبر من صفر',
-                })}
-                invalid={!!errors.amount}
-                type="number" inputMode="numeric" min={1} dir="ltr"
-                className="font-semibold"
-              />
-            </Field>
-            <Field label="طريقة الدفع" required>
-              <Select {...register('method', { required: true })}>
-                {methods.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
-              </Select>
-            </Field>
-          </div>
-
-          <Field label="التاريخ" required error={errors.date?.message}>
-            <Input {...register('date', { required: 'اختاري التاريخ' })} invalid={!!errors.date} type="date" />
-          </Field>
-
-          <Field label="ملاحظة">
-            <Textarea {...register('note')} rows={2} placeholder="اختياري" />
-          </Field>
-
-          <div className="flex gap-3 pt-1">
-            <Button type="submit" loading={saving} className="flex-1">تسجيل الدفعة</Button>
-            <Button type="button" variant="outline" className="flex-1" onClick={() => setModalOpen(false)}>رجوع</Button>
-          </div>
-        </form>
-      </Modal>
 
       <CloseSessionSheet
         reservation={closing}

@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { Link } from 'react-router-dom'
 import { useLang } from '../context/LangContext'
 import { photos } from '../assets/clinic'
 
@@ -47,7 +48,7 @@ export default function Hero() {
 
           <div className="hero__actions">
             <a href="#booking" className="btn btn--gold"><span>{h.cta}</span></a>
-            <a href="#gallery" className="btn btn--outline-gold"><span>{tr.nav.gallery}</span></a>
+            <Link to="/services" className="btn btn--outline-gold"><span>{tr.nav.services}</span></Link>
           </div>
 
           <div className="hero__stats">
@@ -61,7 +62,7 @@ export default function Hero() {
         </div>
       </div>
 
-      <a href="#about" className="hero__scroll" aria-label={h.scroll}>
+      <a href="#gallery" className="hero__scroll" aria-label={h.scroll}>
         <span>{h.scroll}</span>
         <span className="track" />
       </a>

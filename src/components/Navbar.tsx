@@ -34,10 +34,7 @@ export default function Navbar({ onDark = false }: Props) {
       </a>
 
       <ul className={`nav__links${open ? ' open' : ''}`}>
-        <li><a href="#about"        onClick={close}>{tr.nav.about}</a></li>
         <li><Link to="/services"    onClick={close}>{tr.nav.services}</Link></li>
-        <li><a href="#gallery"      onClick={close}>{tr.nav.gallery}</a></li>
-        <li><a href="#why-us"       onClick={close}>{tr.nav.why}</a></li>
         <li><a href="#testimonials" onClick={close}>{tr.nav.reviews}</a></li>
         <li><a href="#booking" className="btn btn--primary btn--sm nav__cta-m" onClick={close}><span>{tr.nav.cta}</span></a></li>
       </ul>
