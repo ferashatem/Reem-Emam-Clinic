@@ -16,6 +16,7 @@ import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber,
 } from '../../utils/formatters'
 import { dueOf, isPriced } from '../../utils/pricing'
+import { pricedService } from '../../utils/services'
 import { C } from '../../theme'
 import type { Client, Payment, PaymentMethod, Reservation } from '../../types'
 
@@ -290,7 +291,9 @@ export default function Payments() {
 
       <CloseSessionSheet
         reservation={closing}
-        service={closing ? services.find(s => s.id === closing.service_id) : null}
+        service={closing
+          ? pricedService(services.find(s => s.id === closing.service_id), services) ?? null
+          : null}
         onClose={() => setClosing(null)}
         onSaved={() => { setClosing(null); reload() }}
       />

@@ -22,7 +22,12 @@ import {
   formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
 } from '../../utils/formatters'
 import { dueOf, isPriced, perPulseOf, priceLabel } from '../../utils/pricing'
-import { CLINIC_SLOTS, takenSlots, isSlotPast, slotOf } from '../../utils/slots'
+import {
+  groupServices, optionsOf, pricedService, serviceLabel, sessionMinutes,
+} from '../../utils/services'
+import {
+  CLINIC_SLOTS, takenSlots, slotUsage, fitsInSlot, freeMinutes, isSlotPast, slotOf,
+} from '../../utils/slots'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsapp'
 import { C } from '../../theme'
@@ -40,6 +45,9 @@ interface BookingForm {
   new_name: string
   new_phone: string
   new_age: string
+  /** The main service — «ليزر». Narrows what the next field offers. */
+  main_id: string
+  /** What actually gets booked: the type inside, or the service itself. */
   service_id: string
   date: string
   time: string
@@ -48,7 +56,7 @@ interface BookingForm {
 
 const emptyForm: BookingForm = {
   client_id: '', new_name: '', new_phone: '', new_age: '',
-  service_id: '', date: todayISO(), time: '', notes: '',
+  main_id: '', service_id: '', date: todayISO(), time: '', notes: '',
 }
 
 export default function StaffReservations() {
@@ -64,7 +72,7 @@ export default function StaffReservations() {
     // Publishes the upcoming days to the public site's slot mirror, once per
     // session — bookings made before the mirror existed still have to show up
     // as taken on the website.
-    void backfillAvailability(reservations)
+    void backfillAvailability(reservations, services)
     return { reservations, clients, services }
   }, [])
 
@@ -97,6 +105,10 @@ export default function StaffReservations() {
   }
   function serviceOf(r: Reservation) {
     return r.service_name || serviceMap[r.service_id]?.name || '—'
+  }
+  /** The doc that holds this booking's rate — a type carries none of its own. */
+  function rateDocOf(r: Reservation) {
+    return pricedService(serviceMap[r.service_id], services)
   }
 
   // ─── Bucketing: website requests / today / upcoming / done ────────────────
@@ -254,11 +266,31 @@ export default function StaffReservations() {
   const form = useForm<BookingForm>({ defaultValues: emptyForm })
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = form
 
-  const watchedService = watch('service_id')
+  const watchedMain = watch('main_id')
   const watchedClientId = watch('client_id')
   const watchedDate = watch('date')
   const watchedTime = watch('time')
-  const selectedService = serviceMap[watchedService]
+
+  const mainServices = useMemo(
+    () => groupServices(services).map(g => g.service),
+    [services]
+  )
+  /** The types inside the chosen service — empty when it's booked directly. */
+  const serviceOptions = useMemo(
+    () => optionsOf(services, watchedMain),
+    [services, watchedMain]
+  )
+  /** The rate to quote always sits on the main service, never on the type. */
+  const selectedService = serviceMap[watchedMain]
+
+  /** The listed rate, for reference only — nothing is charged at booking time. */
+  const rateHint = !selectedService
+    ? undefined
+    : perPulseOf(selectedService) > 0
+      ? `${formatMoney(selectedService.price_per_pulse)} للنبضة — الإجمالي بيتحسب بعد الجلسة`
+      : toNumber(selectedService.price) > 0
+        ? `سعر ثابت ${formatMoney(selectedService.price)}`
+        : 'السعر بيتحدد وقت إنهاء الجلسة'
 
   const filteredClients = useMemo(() => {
     const q = clientSearch.trim().toLowerCase()
@@ -268,31 +300,53 @@ export default function StaffReservations() {
     return list.slice(0, 30)
   }, [clients, clientSearch])
 
-  // Which hours are already spoken for on the chosen day. The full list is
-  // already in memory, so no extra read — `onSubmit` re-checks against fresh
-  // data before writing, in case someone booked from another screen meanwhile.
-  const taken = useMemo(
+  /** How long the session being booked runs — what has to fit in the hour. */
+  const bookedService = serviceOptions.length > 0
+    ? serviceMap[watch('service_id')]
+    : selectedService
+  const minutes = sessionMinutes(bookedService, services)
+
+  // How full each hour of the chosen day is. The bookings are already in
+  // memory, so no extra read — `onSubmit` re-checks against fresh data before
+  // writing, in case someone booked from another screen meanwhile.
+  const usage = useMemo(
+    // A booking from before sessions had lengths takes whatever its service
+    // runs to today, so the desk sees the same free minutes the site does.
+    () => slotUsage(reservations, watchedDate, editTarget?.id,
+      r => sessionMinutes(serviceMap[r.service_id], services)),
+    [reservations, watchedDate, editTarget, serviceMap, services]
+  )
+  const whoIsIn = useMemo(
     () => takenSlots(reservations, watchedDate, editTarget?.id),
     [reservations, watchedDate, editTarget]
   )
 
   const slotOptions = useMemo(() => {
     const current = slotOf(watchedTime)
-    const list = CLINIC_SLOTS.map(slot => ({
-      slot,
-      takenBy: taken.get(slot),
-      past: isSlotPast(watchedDate, slot),
-    }))
+    const list = CLINIC_SLOTS.map(slot => {
+      const used = usage.get(slot) ?? 0
+      return {
+        slot,
+        used,
+        // An hour holds 60 minutes; it's only closed once this session no
+        // longer fits in what's left of it.
+        full: !fitsInSlot(used, minutes),
+        names: (whoIsIn.get(slot) ?? []).map(nameOf),
+        past: isSlotPast(watchedDate, slot),
+      }
+    })
     // A booking made before the fixed hours (or from the website) can sit on an
     // off-grid time — keep it selectable so editing doesn't silently move it.
     if (watchedTime && !CLINIC_SLOTS.includes(watchedTime) && current) {
-      list.push({ slot: watchedTime, takenBy: undefined, past: false })
+      list.push({ slot: watchedTime, used: 0, full: false, names: [], past: false })
       list.sort((a, b) => a.slot.localeCompare(b.slot))
     }
     return list
-  }, [taken, watchedDate, watchedTime])
+    // `nameOf` only reads clientMap, which `whoIsIn` already tracks
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usage, whoIsIn, minutes, watchedDate, watchedTime, clientMap])
 
-  const freeCount = slotOptions.filter(o => !o.takenBy && !o.past).length
+  const freeCount = slotOptions.filter(o => !o.full && !o.past).length
 
   function openCreate() {
     setEditTarget(null)
@@ -310,6 +364,9 @@ export default function StaffReservations() {
     reset({
       ...emptyForm,
       client_id: r.client_id,
+      // A booking points at whatever was booked — walk back up to its service
+      // so the first select opens on the right one.
+      main_id: serviceMap[r.service_id]?.parent_id || r.service_id,
       service_id: r.service_id,
       date: r.date ?? todayISO(),
       time: r.time ?? '',
@@ -346,23 +403,36 @@ export default function StaffReservations() {
   async function onSubmit(values: BookingForm) {
     setSaving(true)
     try {
+      const client = await resolveClient(values)
+      // A service with no types inside is booked as itself.
+      const serviceId = optionsOf(services, values.main_id).length > 0
+        ? values.service_id
+        : values.main_id
+      const service = serviceMap[serviceId]
+      const takes = sessionMinutes(service, services)
+
       // The list on screen can be minutes old — re-read the day before writing
-      // so two people booking at once can't land on the same hour.
+      // so two people booking at once can't overrun the same hour.
       const sameDay = await getReservations({ date: values.date })
-      const clash = takenSlots(sameDay, values.date, editTarget?.id).get(slotOf(values.time))
-      if (clash) {
-        throw new Error(`المعاد ده اتحجز للتو لـ ${nameOf(clash)} — اختاري معاد تاني`)
+      const slot = slotOf(values.time)
+      const used = slotUsage(sameDay, values.date, editTarget?.id,
+        x => sessionMinutes(serviceMap[x.service_id], services)).get(slot) ?? 0
+      if (!fitsInSlot(used, takes)) {
+        const who = (takenSlots(sameDay, values.date, editTarget?.id).get(slot) ?? []).map(nameOf)
+        throw new Error(
+          `الساعة دي فاضل فيها ${freeMinutes(used)} دقيقة بس (${who.join('، ')}) — والجلسة دي ${takes} دقيقة`
+        )
       }
 
-      const client = await resolveClient(values)
-      const service = serviceMap[values.service_id]
-      const rate = perPulseOf(service)
+      const rate = perPulseOf(pricedService(service, services))
       const payload: Record<string, unknown> = {
         client_id: client.id,
         client_name: client.name ?? '',
         client_phone: client.phone ?? '',
-        service_id: values.service_id,
-        service_name: service?.name ?? '',
+        service_id: serviceId,
+        service_name: serviceLabel(service, services),
+        // What the hour has to keep free for her.
+        duration_minutes: takes,
         date: values.date,
         time: values.time,
         notes: values.notes?.trim() ?? '',
@@ -460,7 +530,7 @@ export default function StaffReservations() {
                 r={r}
                 name={nameOf(r)}
                 service={serviceOf(r)}
-                serviceDoc={serviceMap[r.service_id]}
+                serviceDoc={rateDocOf(r)}
                 collecting={collecting}
                 busy={busyId === r.id}
                 waHref={waLink(r)}
@@ -494,13 +564,13 @@ export default function StaffReservations() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         <p>{serviceOf(r)}</p>
-                        <PricingPill reservation={r} service={serviceMap[r.service_id]} className="mt-1" />
+                        <PricingPill reservation={r} service={rateDocOf(r)} className="mt-1" />
                       </td>
                       <td className="px-4 py-3 text-gray-600 tabular-nums">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(r.date)}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatTime(r.time)}</td>
                       <td className="px-4 py-3 whitespace-nowrap tabular-nums">
-                        <PriceText r={r} service={serviceMap[r.service_id]} />
+                        <PriceText r={r} service={rateDocOf(r)} />
                       </td>
                       <td className="px-4 py-3"><PaymentCell r={r} /></td>
                       <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
@@ -624,33 +694,62 @@ export default function StaffReservations() {
             </Field>
           )}
 
-          {/* Service — the listed rate is shown for reference, never as an input */}
+          {/* Service — the listed rate is shown for reference, never as an input.
+              A service that branches («ليزر» → الأجهزة) asks the type next; one
+              that doesn't is booked straight from this field. */}
           <Field
             label="الخدمة"
             required
-            error={errors.service_id?.message}
-            hint={
-              selectedService
-                ? perPulseOf(selectedService) > 0
-                  ? `${formatMoney(selectedService.price_per_pulse)} للنبضة — الإجمالي بيتحسب بعد الجلسة`
-                  : `سعر ثابت ${formatMoney(selectedService.price)}`
-                : undefined
-            }
+            error={errors.main_id?.message}
+            hint={rateHint}
           >
             <Select
-              {...register('service_id', { required: 'اختاري الخدمة' })}
-              invalid={!!errors.service_id}
+              {...register('main_id', {
+                required: 'اختاري الخدمة',
+                // A different service means a different set of types
+                onChange: () => setValue('service_id', ''),
+              })}
+              invalid={!!errors.main_id}
             >
               <option value="">اختاري الخدمة...</option>
-              {services.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.name} — {perPulseOf(s) > 0
-                    ? `${formatMoney(s.price_per_pulse)} / نبضة`
-                    : formatMoney(s.price)}
-                </option>
-              ))}
+              {mainServices.map(s => {
+                const inner = optionsOf(services, s.id).length
+                // Older services still carry a rate; newer ones are priced when
+                // the session ends, so there's nothing to put next to the name.
+                const rate = perPulseOf(s) > 0
+                  ? ` — ${formatMoney(s.price_per_pulse)} / نبضة`
+                  : toNumber(s.price) > 0
+                    ? ` — ${formatMoney(s.price)}`
+                    : ''
+                return (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{rate}{inner > 0 ? ` · ${inner} نوع` : ''}
+                  </option>
+                )
+              })}
             </Select>
           </Field>
+
+          {serviceOptions.length > 0 && (
+            <Field
+              label="النوع"
+              required
+              error={errors.service_id?.message}
+              hint="بيحدد الجهاز/النوع اللي هيتعمل بيه — السعر جاي من الخدمة فوق"
+            >
+              <Select
+                {...register('service_id', {
+                  validate: v => serviceOptions.length === 0 || !!v || 'اختاري النوع',
+                })}
+                invalid={!!errors.service_id}
+              >
+                <option value="">اختاري النوع...</option>
+                {serviceOptions.map(o => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </Select>
+            </Field>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Field label="التاريخ" required error={errors.date?.message}>
@@ -669,15 +768,22 @@ export default function StaffReservations() {
               <Select
                 {...register('time', {
                   required: 'اختاري المعاد',
-                  validate: v => !taken.has(slotOf(v)) || 'المعاد ده محجوز — اختاري معاد تاني',
+                  validate: v => fitsInSlot(usage.get(slotOf(v)) ?? 0, minutes) ||
+                    'الساعة دي مفيهاش وقت كفاية للجلسة دي — اختاري معاد تاني',
                 })}
                 invalid={!!errors.time}
               >
                 <option value="">اختاري المعاد...</option>
-                {slotOptions.map(({ slot, takenBy, past }) => (
-                  <option key={slot} value={slot} disabled={!!takenBy || past}>
+                {/* An hour that's part-booked still shows what's left of it,
+                    and who is already in it. */}
+                {slotOptions.map(({ slot, used, full, names, past }) => (
+                  <option key={slot} value={slot} disabled={full || past}>
                     {formatTime(slot)}
-                    {takenBy ? ` — محجوز (${nameOf(takenBy)})` : past ? ' — فات' : ''}
+                    {full
+                      ? ` — مليانة (${names.join('، ')})`
+                      : used > 0
+                        ? ` — فاضل ${freeMinutes(used)} د (${names.join('، ')})`
+                        : past ? ' — فات' : ''}
                   </option>
                 ))}
               </Select>
@@ -701,7 +807,7 @@ export default function StaffReservations() {
 
       <CloseSessionSheet
         reservation={closing}
-        service={closing ? serviceMap[closing.service_id] : null}
+        service={closing ? rateDocOf(closing) : null}
         onClose={() => setClosing(null)}
         onSaved={() => { setClosing(null); reload() }}
       />

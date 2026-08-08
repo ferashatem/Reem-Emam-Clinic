@@ -79,6 +79,8 @@ export async function getActiveServices(): Promise<Service[]> {
 
 export async function createService(data: DocumentData) {
   return addDoc(collection(db, 'services'), {
+    // A variant («كانديلا» under «ليزر») carries its parent; a main service null.
+    parent_id: data.parent_id ?? null,
     ...data,
     is_active: true,
     created_at: now(),
@@ -90,7 +92,27 @@ export async function updateService(id: string, data: Partial<DocumentData>) {
   return updateDoc(doc(db, 'services', id), data)
 }
 
+/** The variants living under a service. */
+async function serviceOptionDocs(parentId: string) {
+  const snap = await getDocs(query(collection(db, 'services'), where('parent_id', '==', parentId)))
+  return snap.docs.filter(d => d.data().deleted_at == null)
+}
+
+/**
+ * Hiding or showing a main service carries its variants along — a device left
+ * active under a hidden «ليزر» would otherwise stay bookable on its own.
+ */
+export async function setServiceActive(id: string, isActive: boolean) {
+  const options = await serviceOptionDocs(id)
+  await Promise.all(options.map(d => updateDoc(d.ref, { is_active: isActive })))
+  return updateDoc(doc(db, 'services', id), { is_active: isActive })
+}
+
 export async function softDeleteService(id: string) {
+  const options = await serviceOptionDocs(id)
+  await Promise.all(
+    options.map(d => updateDoc(d.ref, { deleted_at: now(), is_active: false }))
+  )
   return updateDoc(doc(db, 'services', id), { deleted_at: now(), is_active: false })
 }
 
@@ -159,9 +181,13 @@ export async function getReservationsByClient(clientId: string): Promise<Reserva
  */
 async function refreshAvailability(...dates: (string | null | undefined)[]) {
   const unique = [...new Set(dates.filter((d): d is string => !!d))]
+  if (unique.length === 0) return
+  // Bookings made before sessions had lengths carry none, so the mirror asks
+  // the catalogue how long each one runs rather than writing off a whole hour.
+  const services = await getServices().catch(() => [] as Service[])
   for (const date of unique) {
     try {
-      await syncBusySlots(date, await getReservations({ date }))
+      await syncBusySlots(date, await getReservations({ date }), services)
     } catch { /* the bookings are the source of truth — the mirror can lag */ }
   }
 }
@@ -180,7 +206,11 @@ export async function createReservation(data: DocumentData) {
   if (auth.currentUser) await refreshAvailability(data.date as string)
   else {
     try {
-      await holdSlot(String(data.date ?? ''), String(data.time ?? ''))
+      await holdSlot(
+        String(data.date ?? ''),
+        String(data.time ?? ''),
+        data.duration_minutes as number | null | undefined
+      )
     } catch { /* the request is in — the desk's next write fixes the mirror */ }
   }
 
@@ -190,8 +220,10 @@ export async function createReservation(data: DocumentData) {
 export async function updateReservation(id: string, data: Partial<DocumentData>) {
   const ref = doc(db, 'reservations', id)
   // Pricing and payment edits don't move anyone's hour — only re-read the
-  // booking when the change could free or claim a slot.
-  const movesSlot = 'date' in data || 'time' in data || 'status' in data
+  // booking when the change could free or claim a slot. A different session
+  // length changes how much of the hour is left, so it counts too.
+  const movesSlot = 'date' in data || 'time' in data || 'status' in data ||
+    'duration_minutes' in data
   const before = movesSlot ? (await getDoc(ref)).data() : null
 
   await updateDoc(ref, data)

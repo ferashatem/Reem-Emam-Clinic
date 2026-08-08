@@ -23,6 +23,7 @@ import {
   formatDateAr, formatDateShort, formatMoney, formatTime, todayISO, toNumber, toDate,
 } from '../../utils/formatters'
 import { dueOf, isPriced, priceLabel } from '../../utils/pricing'
+import { pricedService } from '../../utils/services'
 import { slotOf } from '../../utils/slots'
 import { buildWhatsAppLink } from '../../utils/whatsapp'
 import { C } from '../../theme'
@@ -46,6 +47,9 @@ export default function ClinicDay() {
     return () => clearInterval(id)
   }, [])
 
+  // Needed to price a session: the flat price for services that aren't per-pulse.
+  const services = useLoader(() => getActiveServices(), [])
+
   // Every booking, not just the day's: unsettled sessions from earlier days are
   // money the assistant still has to collect, so they have to be on this screen.
   const day = useLoader(async () => {
@@ -53,7 +57,7 @@ export default function ClinicDay() {
     // Publishes the upcoming days to the public site's slot mirror, once per
     // session — the desk lives on this screen, so it's the surest place to
     // catch bookings made before the mirror existed.
-    void backfillAvailability(reservations)
+    void backfillAvailability(reservations, services.data ?? [])
     return reservations
   }, [])
   /**
@@ -74,9 +78,11 @@ export default function ClinicDay() {
     }
   }, [reloadDay])
 
-  // Needed to price a session: the flat price for services that aren't per-pulse.
-  const services = useLoader(() => getActiveServices(), [])
-  const serviceFor = (r: Reservation) => (services.data ?? []).find(s => s.id === r.service_id)
+  /** The doc holding the rate — a booking made on a type is priced from its service. */
+  const serviceFor = (r: Reservation) => {
+    const list = services.data ?? []
+    return pricedService(list.find(s => s.id === r.service_id), list)
+  }
   const isToday = date === todayISO()
 
   const queue = useMemo(() => {

@@ -1,4 +1,3 @@
-import { Link } from "react-router-dom";
 import { useLang } from "../context/LangContext";
 import logo from "../assets/logo.png";
 import {
@@ -62,17 +61,6 @@ export default function Footer() {
               <WhatsAppIcon />
             </a>
           </div>
-        </div>
-
-        <div className="foot__col">
-          <h4>{f.servicesTitle}</h4>
-          <ul>
-            {tr.services.items.slice(0, 5).map((s) => (
-              <li key={s.name}>
-                <Link to="/services">{s.name}</Link>
-              </li>
-            ))}
-          </ul>
         </div>
 
         <div className="foot__col">

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
-import { getServices, createService, updateService, softDeleteService } from '../../services/firestore'
+import { getServices, createService, updateService, softDeleteService, setServiceActive } from '../../services/firestore'
 import { useLoader, messageFor } from '../../hooks/useLoader'
 import { useConfirm } from '../../components/ui/ConfirmDialog'
 import Modal from '../../components/ui/Modal'
@@ -10,6 +10,8 @@ import EmptyState from '../../components/ui/EmptyState'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
 import { formatMoney, toNumber } from '../../utils/formatters'
+import { groupServices, sessionMinutes } from '../../utils/services'
+import { SLOT_MINUTES } from '../../utils/slots'
 import { C } from '../../theme'
 import type { Service } from '../../types'
 
@@ -17,34 +19,69 @@ interface ServiceForm {
   name: string
   description: string
   duration_minutes: string
-  price: string
-  price_per_pulse: string
+}
+
+/** The lengths a session actually runs to — an hour holds 60 minutes of them. */
+const durationChoices = [15, 20, 30, 45, 60]
+
+/**
+ * What a service costs, when it has a stored price at all. Prices aren't typed
+ * here any more — the session's total is agreed and entered when it's closed —
+ * so this only reports what older services still carry.
+ */
+function priceOf(s: Service) {
+  const perPulse = toNumber(s.price_per_pulse)
+  if (perPulse > 0) return { value: formatMoney(perPulse), note: 'للنبضة الواحدة', perPulse, priced: true }
+  if (toNumber(s.price) > 0) return { value: formatMoney(s.price), note: 'سعر ثابت', perPulse: 0, priced: true }
+  return { value: '', note: '', perPulse: 0, priced: false }
+}
+
+/** How many of these sessions the clinic can stack inside one hour. */
+function perHour(s: Service) {
+  const minutes = toNumber(s.duration_minutes) || SLOT_MINUTES
+  const n = Math.floor(SLOT_MINUTES / minutes)
+  return n > 1 ? `${n} جلسات في الساعة` : 'جلسة واحدة في الساعة'
 }
 
 export default function Services() {
   const { data, loading, error, reload } = useLoader(() => getServices(), [])
   const services = data ?? []
+  const groups = groupServices(services)
+  const optionCount = services.length - groups.length
   const { confirm, dialog } = useConfirm()
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Service | null>(null)
+  /** Set when the doc being saved is a variant inside this service. */
+  const [parent, setParent] = useState<Service | null>(null)
   const [saving, setSaving] = useState(false)
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<ServiceForm>()
+  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<ServiceForm>()
+  const watchedDuration = watch('duration_minutes')
+
+  const blank: ServiceForm = { name: '', description: '', duration_minutes: '' }
 
   function openCreate() {
     setEditTarget(null)
-    reset({ name: '', description: '', duration_minutes: '', price: '', price_per_pulse: '' })
+    setParent(null)
+    reset(blank)
+    setModalOpen(true)
+  }
+
+  /** Adds a device / area / tier inside an existing service. */
+  function openAddOption(main: Service) {
+    setEditTarget(null)
+    setParent(main)
+    reset(blank)
     setModalOpen(true)
   }
 
   function openEdit(s: Service) {
     setEditTarget(s)
+    setParent(s.parent_id ? services.find(x => x.id === s.parent_id) ?? null : null)
     reset({
       name: s.name ?? '',
       description: s.description ?? '',
-      duration_minutes: s.duration_minutes != null ? String(s.duration_minutes) : '',
-      price: toNumber(s.price) > 0 ? String(s.price) : '',
-      price_per_pulse: toNumber(s.price_per_pulse) > 0 ? String(s.price_per_pulse) : '',
+      duration_minutes: toNumber(s.duration_minutes) > 0 ? String(s.duration_minutes) : '',
     })
     setModalOpen(true)
   }
@@ -52,21 +89,27 @@ export default function Services() {
   async function onSubmit(values: ServiceForm) {
     setSaving(true)
     try {
-      const payload = {
+      // Names and a session length. Editing leaves whatever price an older
+      // service still carries untouched — it's what the session sheet uses to
+      // work the total out — while anything new starts without one.
+      const payload: Record<string, unknown> = {
         name: values.name.trim(),
+        parent_id: parent?.id ?? null,
         description: values.description?.trim() ?? '',
-        duration_minutes: toNumber(values.duration_minutes),
-        // Empty = the service is priced per pulse; the site then shows no fixed price.
-        price: values.price ? toNumber(values.price) : null,
-        // Empty = flat-price service; the booking form then ignores pulses for pricing.
-        price_per_pulse: values.price_per_pulse ? toNumber(values.price_per_pulse) : null,
+        // 0 = a type falling back to its service's length, or an hour for a
+        // service that never got one.
+        duration_minutes: Math.min(toNumber(values.duration_minutes), SLOT_MINUTES),
+      }
+      if (!editTarget) {
+        payload.price = null
+        payload.price_per_pulse = null
       }
       if (editTarget) {
         await updateService(editTarget.id, payload)
-        toast.success('تم تعديل الخدمة')
+        toast.success(parent ? 'تم تعديل النوع' : 'تم تعديل الخدمة')
       } else {
         await createService(payload)
-        toast.success('تم إضافة الخدمة')
+        toast.success(parent ? 'تم إضافة النوع' : 'تم إضافة الخدمة')
       }
       setModalOpen(false)
       reload()
@@ -77,20 +120,26 @@ export default function Services() {
     }
   }
 
-  async function handleToggleActive(s: Service) {
+  async function handleToggleActive(s: Service, options: Service[]) {
     try {
-      await updateService(s.id, { is_active: !s.is_active })
-      toast.success(s.is_active ? 'تم إخفاء الخدمة' : 'تم تفعيل الخدمة')
+      await setServiceActive(s.id, !s.is_active)
+      toast.success(
+        s.is_active
+          ? `تم إخفاء الخدمة${options.length ? ' وأنواعها' : ''}`
+          : `تم تفعيل الخدمة${options.length ? ' وأنواعها' : ''}`
+      )
       reload()
     } catch (err) {
       toast.error(messageFor(err))
     }
   }
 
-  async function handleDelete(s: Service) {
+  async function handleDelete(s: Service, options: Service[]) {
     const ok = await confirm({
-      title: 'مسح الخدمة',
-      message: `هتمسحي خدمة "${s.name}"؟ الحجوزات القديمة هتفضل زي ما هي.`,
+      title: s.parent_id ? 'مسح النوع' : 'مسح الخدمة',
+      message: options.length
+        ? `هتمسحي خدمة "${s.name}" و${options.length} نوع جواها؟ الحجوزات القديمة هتفضل زي ما هي.`
+        : `هتمسحي "${s.name}"؟ الحجوزات القديمة هتفضل زي ما هي.`,
       confirmLabel: 'مسح',
       danger: true,
     })
@@ -108,18 +157,22 @@ export default function Services() {
 
   return (
     <div>
-      <PageHeader title="الخدمات" subtitle={`${services.length} خدمة`} action={addButton} />
+      <PageHeader
+        title="الخدمات"
+        subtitle={`${groups.length} خدمة${optionCount ? ` · ${optionCount} نوع` : ''}`}
+        action={addButton}
+      />
 
       {loading ? (
         <LoadingBlock />
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
-      ) : services.length === 0 ? (
+      ) : groups.length === 0 ? (
         <EmptyState icon="✨" title="مفيش خدمات لسه" description="ضيفي أول خدمة عشان تظهر في الحجز وفي الموقع" action={addButton} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {services.map(s => {
-            const perPulse = toNumber(s.price_per_pulse)
+          {groups.map(({ service: s, options }) => {
+            const price = priceOf(s)
             return (
               <div key={s.id} className="bg-white rounded-2xl p-5 shadow-sm border flex flex-col" style={{ borderColor: C.primarySoft }}>
                 <div className="flex items-start justify-between gap-2 mb-2">
@@ -129,43 +182,85 @@ export default function Services() {
                   </span>
                 </div>
 
+                {/* The length decides how many clients share an hour — it belongs
+                    next to the name, not buried in the form. */}
+                <p className="text-xs mb-3 tabular-nums" style={{ color: C.primary }}>
+                  ⏱ {sessionMinutes(s, services)} دقيقة · {perHour(s)}
+                </p>
+
                 {s.description && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{s.description}</p>}
 
-                <div className="flex items-end justify-between mb-4 mt-auto">
-                  <div>
-                    {perPulse > 0 ? (
-                      <>
-                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(perPulse)}</p>
-                        <p className="text-xs text-gray-400">للنبضة الواحدة</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-lg font-bold" style={{ color: C.primary }}>{formatMoney(s.price)}</p>
-                        <p className="text-xs text-gray-400">سعر ثابت</p>
-                      </>
-                    )}
-                  </div>
-                  {!!s.duration_minutes && (
-                    <span className="text-xs text-gray-400">{s.duration_minutes} دقيقة</span>
-                  )}
-                </div>
+                <div className="mt-auto" />
 
-                {/* A worked example — "٥ ج / نبضة" is abstract until you see
-                    what a real session costs. */}
+                {/* Only services from before the prices came out of this screen
+                    still have one; the rest are priced when the session ends. */}
                 <div
                   className="rounded-xl px-3 py-2 mb-4 text-xs tabular-nums"
-                  style={{ backgroundColor: C.bg, color: C.primary }}
+                  style={{ backgroundColor: C.bg, color: price.priced ? C.primary : '#9CA3AF' }}
                 >
-                  {perPulse > 0
-                    ? `مثال: ٥٠٠ نبضة = ${formatMoney(perPulse * 500)}`
-                    : 'سعر ثابت للجلسة — النبضات بتتسجل للتوثيق بس'}
+                  {price.priced
+                    ? `${price.value} · ${price.note}${price.perPulse > 0 ? ` — مثال: ٥٠٠ نبضة = ${formatMoney(price.perPulse * 500)}` : ''}`
+                    : 'السعر بيتحدد وقت إنهاء الجلسة'}
                 </div>
+
+                {/* The types are a choice of what gets used, not of what it
+                    costs — so they're names, and the price above covers them. */}
+                {options.length > 0 && (
+                  <div className="mb-4">
+                    <p className="text-xs mb-2" style={{ color: C.primary }}>
+                      الأنواع اللي جواها ({options.length})
+                    </p>
+                    <div className="space-y-2">
+                      {options.map(o => (
+                        <div
+                          key={o.id}
+                          className="flex items-center justify-between gap-2 rounded-xl px-3 py-2"
+                          style={{ backgroundColor: C.bg }}
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold truncate" style={{ color: C.text }}>{o.name}</p>
+                            <p className="text-xs text-gray-400 truncate tabular-nums">
+                              {sessionMinutes(o, services)} دقيقة
+                              {o.description ? ` · ${o.description}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => openEdit(o)}
+                              className="text-xs px-2 py-1 rounded-lg"
+                              style={{ color: C.primary }}
+                            >
+                              تعديل
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(o, [])}
+                              className="text-xs px-2 py-1 rounded-lg"
+                              style={{ color: C.red }}
+                            >
+                              مسح
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <Button
+                  size="sm" variant="outline" className="w-full mb-2"
+                  onClick={() => openAddOption(s)}
+                  style={{ borderColor: C.primarySoft, color: C.primary }}
+                >
+                  + إضافة نوع جوه {s.name}
+                </Button>
 
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(s)}>تعديل</Button>
                   <Button
                     size="sm" variant="outline" className="flex-1"
-                    onClick={() => handleToggleActive(s)}
+                    onClick={() => handleToggleActive(s, options)}
                     style={s.is_active
                       ? { borderColor: '#FED7AA', color: '#C2410C' }
                       : { borderColor: '#BBF7D0', color: '#15803D' }}
@@ -174,7 +269,7 @@ export default function Services() {
                   </Button>
                   <Button
                     size="sm" variant="outline"
-                    onClick={() => handleDelete(s)}
+                    onClick={() => handleDelete(s, options)}
                     style={{ borderColor: '#FECACA', color: C.red }}
                   >
                     مسح
@@ -186,52 +281,76 @@ export default function Services() {
         </div>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editTarget ? 'تعديل خدمة' : 'إضافة خدمة'}>
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={
+          parent
+            ? (editTarget ? `تعديل نوع في «${parent.name}»` : `إضافة نوع في «${parent.name}»`)
+            : (editTarget ? 'تعديل خدمة' : 'إضافة خدمة')
+        }
+      >
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          <Field label="اسم الخدمة" required error={errors.name?.message}>
-            <Input {...register('name', { required: 'اكتبي اسم الخدمة' })} invalid={!!errors.name} placeholder="مثال: ليزر وش" />
+          {parent && (
+            <p className="text-xs rounded-xl px-3 py-2" style={{ backgroundColor: C.bg, color: C.primary }}>
+              العميلة هتختار «{parent.name}» الأول، وبعدين تختار النوع ده.
+            </p>
+          )}
+
+          <Field label={parent ? 'اسم النوع' : 'اسم الخدمة'} required error={errors.name?.message}>
+            <Input
+              {...register('name', { required: parent ? 'اكتبي اسم النوع' : 'اكتبي اسم الخدمة' })}
+              invalid={!!errors.name}
+              placeholder={parent ? 'مثال: جهاز كانديلا' : 'مثال: ليزر'}
+            />
           </Field>
 
           <Field label="الوصف">
             <Textarea {...register('description')} rows={2} placeholder="بيظهر للعملاء في الموقع" />
           </Field>
 
+          {/* No price here: the session's total is agreed with the client and
+              written down when the session is closed. The length, though, is
+              what decides whether another client still fits in the same hour. */}
           <Field
-            label="سعر النبضة (جنيه)"
-            error={errors.price_per_pulse?.message}
-            hint="وقت الحجز: الإجمالي = عدد النبضات × السعر ده"
+            label="مدة الجلسة (دقيقة)"
+            error={errors.duration_minutes?.message}
+            hint={parent
+              ? 'سيبيها فاضية عشان تاخد مدة الخدمة الرئيسية'
+              : 'الساعة فيها ٦٠ دقيقة — الجلسة اللي بنص ساعة بتسيب نص الساعة مفتوح لحد تاني'}
           >
-            <Input
-              {...register('price_per_pulse', {
-                validate: (v, all) => {
-                  if (v && toNumber(v) <= 0) return 'السعر لازم يكون أكبر من صفر'
-                  if (!v && !all.price) return 'اكتبي سعر النبضة أو سعر الجلسة'
-                  return true
-                },
-              })}
-              invalid={!!errors.price_per_pulse}
-              type="number" inputMode="numeric" min={0} step="any" dir="ltr" placeholder="مثال: 15"
-            />
-          </Field>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field
-              label="سعر الجلسة الثابت (جنيه)"
-              error={errors.price?.message}
-              hint="للخدمات اللي مش بالنبضة — وبيظهر في الموقع"
-            >
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {durationChoices.map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setValue('duration_minutes', String(m), { shouldValidate: true })}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors"
+                    style={toNumber(watchedDuration) === m
+                      ? { backgroundColor: C.primary, color: '#fff', borderColor: C.primary }
+                      : { backgroundColor: '#fff', color: C.primary, borderColor: C.primarySoft }}
+                  >
+                    {m} دقيقة
+                  </button>
+                ))}
+              </div>
               <Input
-                {...register('price', {
-                  validate: v => !v || toNumber(v) > 0 || 'السعر لازم يكون أكبر من صفر',
+                {...register('duration_minutes', {
+                  validate: v => {
+                    if (!v) return true
+                    const n = toNumber(v)
+                    if (n <= 0) return 'المدة لازم تكون أكبر من صفر'
+                    if (n > SLOT_MINUTES) return `أطول مدة للجلسة ${SLOT_MINUTES} دقيقة`
+                    return true
+                  },
                 })}
-                invalid={!!errors.price}
-                type="number" inputMode="numeric" min={0} dir="ltr"
+                invalid={!!errors.duration_minutes}
+                type="number" inputMode="numeric" min={0} max={SLOT_MINUTES} dir="ltr"
+                placeholder={parent ? `مدة الخدمة (${sessionMinutes(parent, services)} دقيقة)` : '60'}
               />
-            </Field>
-            <Field label="المدة (دقيقة)" error={errors.duration_minutes?.message}>
-              <Input {...register('duration_minutes')} type="number" inputMode="numeric" min={0} dir="ltr" />
-            </Field>
-          </div>
+            </div>
+          </Field>
 
           <div className="flex gap-3 pt-1">
             <Button type="submit" loading={saving} className="flex-1">حفظ</Button>

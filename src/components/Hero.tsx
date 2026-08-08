@@ -48,7 +48,7 @@ export default function Hero() {
 
           <h1 className="hero__title">
             <span className="ln"><Words text={h.headline} from={0} /></span>
-            <span className="ln ln--gold"><Words text={h.headlineB} from={firstCount} /></span>
+            <span className="ln ln--gold"><Words text={h.headlineB} from={  firstCount} /></span>
           </h1>
 
           <p className="hero__text">{h.tag}</p>
@@ -56,15 +56,6 @@ export default function Hero() {
           <div className="hero__actions">
             <a href="#booking" className="btn btn--gold"><span>{h.cta}</span></a>
             <Link to="/services" className="btn btn--outline-gold"><span>{tr.nav.services}</span></Link>
-          </div>
-
-          <div className="hero__stats">
-            {h.stats.map((s, i) => (
-              <div key={i} className="hero__stat">
-                <div className="v">{s.v}</div>
-                <div className="l">{s.l}</div>
-              </div>
-            ))}
           </div>
         </div>
       </div>

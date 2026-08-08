@@ -42,7 +42,18 @@ export interface Client {
 export interface Service {
   id: string
   name: string
+  /**
+   * Set when this doc is a variant *inside* another service — the device under
+   * «ليزر», the area under «شعر». Null/absent = a main service the client picks
+   * first. A main service that has variants is never booked directly.
+   */
+  parent_id?: string | null
   description?: string
+  /**
+   * How long a session of this service runs. It's what decides whether another
+   * client still fits in the same hour. A type may set its own; blank means it
+   * takes its service's length.
+   */
   duration_minutes?: number
   /** Flat session price. Used when price_per_pulse is not set. */
   price?: number | null
@@ -60,6 +71,12 @@ export interface Reservation {
   client_phone?: string
   service_id: string
   service_name?: string
+  /**
+   * How much of the hour this session takes, snapshotted at booking time. The
+   * hour holds 60 minutes in total, so a 15-minute session leaves 45 for
+   * whoever books next. Absent = the booking holds the whole hour.
+   */
+  duration_minutes?: number | null
   /** Number of laser pulses delivered in this session. */
   pulses?: number | null
   /** Snapshot of the service's per-pulse price at booking time. */

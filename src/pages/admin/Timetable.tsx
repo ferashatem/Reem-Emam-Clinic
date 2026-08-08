@@ -74,8 +74,9 @@ export default function Timetable() {
     return slots.find(s => s.day === day && s.slot_start === hour)
   }
 
-  function getReservationForSlot(day: string, hour: string) {
-    return reservations.find(r => r.date === day && r.time === hour && r.status !== 'cancelled')
+  /** An hour can hold more than one session now that sessions have lengths. */
+  function getReservationsForSlot(day: string, hour: string) {
+    return reservations.filter(r => r.date === day && r.time === hour && r.status !== 'cancelled')
   }
 
   const dayNames = ['Sat', 'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri']
@@ -133,7 +134,8 @@ export default function Timetable() {
                   {weekDays.map((d, i) => {
                     const dayStr = format(d, 'yyyy-MM-dd')
                     const slot = getSlotForCell(dayStr, hour)
-                    const reservation = getReservationForSlot(dayStr, hour)
+                    const booked = getReservationsForSlot(dayStr, hour)
+                    const reservation = booked[0]
 
                     let bg = '#F9FAFB'
                     let content = null
@@ -142,7 +144,10 @@ export default function Timetable() {
                       bg = '#FEF3C7'
                       content = (
                         <div className="text-xs leading-tight">
-                          <p className="font-medium" style={{ color: '#92400E' }}>{clientMap[reservation.client_id]?.name ?? '-'}</p>
+                          <p className="font-medium" style={{ color: '#92400E' }}>
+                            {clientMap[reservation.client_id]?.name ?? '-'}
+                            {booked.length > 1 ? ` +${booked.length - 1}` : ''}
+                          </p>
                           <p className="text-gray-500">{serviceMap[reservation.service_id]?.name ?? '-'}</p>
                         </div>
                       )

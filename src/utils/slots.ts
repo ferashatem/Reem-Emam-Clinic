@@ -37,22 +37,79 @@ export function slotOf(time?: string | null): string {
 }
 
 /**
- * Slots already spoken for on `date`. A cancelled booking frees its slot;
- * `exceptId` keeps a booking from colliding with itself while being edited.
+ * How long a booking holds its hour for. A booking taken before sessions had a
+ * length carries none of its own; `fallback` is then what its service says
+ * today, and only a booking whose service can't be found at all falls back to
+ * holding the whole hour.
+ */
+export function minutesOf(
+  r: Pick<Reservation, 'duration_minutes'>,
+  fallback = SLOT_MINUTES
+): number {
+  const n = Number(r.duration_minutes)
+  if (Number.isFinite(n) && n > 0) return Math.min(n, SLOT_MINUTES)
+  return Math.min(Math.max(1, fallback), SLOT_MINUTES)
+}
+
+/**
+ * Minutes already committed inside each hour of `date`. An hour holds 60 of
+ * them, so a half-hour session leaves the other half open to someone whose
+ * session is short enough to fit in it.
+ *
+ * `minutesFor` supplies the length for a booking that never stored one — pass
+ * it wherever the services are on hand, so an old booking takes what its
+ * service actually runs to instead of blocking the whole hour.
+ */
+export function slotUsage(
+  reservations: Reservation[],
+  date: string,
+  exceptId?: string | null,
+  minutesFor?: (r: Reservation) => number
+): Map<string, number> {
+  const used = new Map<string, number>()
+  if (!date) return used
+  for (const r of reservations) {
+    if (r.date !== date) continue
+    if (r.status === 'cancelled') continue
+    if (exceptId && r.id === exceptId) continue
+    const slot = slotOf(r.time)
+    if (!slot) continue
+    used.set(slot, (used.get(slot) ?? 0) + minutesOf(r, minutesFor?.(r)))
+  }
+  return used
+}
+
+/** Whether a session of `minutes` still fits in an hour that's `used` deep. */
+export function fitsInSlot(used: number, minutes: number): boolean {
+  return used + Math.max(0, minutes) <= SLOT_MINUTES
+}
+
+/** What's left of an hour, never below zero. */
+export function freeMinutes(used: number): number {
+  return Math.max(0, SLOT_MINUTES - used)
+}
+
+/**
+ * Who's in each hour on `date`, for the desk's own view. A cancelled booking
+ * frees its slot; `exceptId` keeps a booking from colliding with itself while
+ * being edited.
  */
 export function takenSlots(
   reservations: Reservation[],
   date: string,
   exceptId?: string | null
-): Map<string, Reservation> {
-  const map = new Map<string, Reservation>()
+): Map<string, Reservation[]> {
+  const map = new Map<string, Reservation[]>()
   if (!date) return map
   for (const r of reservations) {
     if (r.date !== date) continue
     if (r.status === 'cancelled') continue
     if (exceptId && r.id === exceptId) continue
     const slot = slotOf(r.time)
-    if (slot) map.set(slot, r)
+    if (!slot) continue
+    const list = map.get(slot)
+    if (list) list.push(r)
+    else map.set(slot, [r])
   }
   return map
 }

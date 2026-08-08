@@ -114,28 +114,45 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
-    // ── Availability — the booked hours, with nobody's name on them ─────────
-    // The public booking form greys out hours that are taken, and it must do
-    // that without reading /reservations (patient names and phones live there).
-    // So this holds one doc per date: { taken: ['10:00', '14:00'] } — nothing
-    // else. The team rebuilds it from the bookings on every write; a visitor
-    // may only append the single hour she just requested, never clear the day.
+    // ── Availability — the day's load, with nobody's name on it ─────────────
+    // The public booking form has to know what's still open without reading
+    // /reservations (patient names and phones live there). So this holds one
+    // doc per date: { used: { '13:00': 45 }, taken: ['13:00'] } — how many of
+    // each hour's 60 minutes are spoken for, and the hours with none left.
+    // The team rebuilds it from the bookings on every write; a visitor may only
+    // add her own session's minutes to a single hour, never clear the day.
     match /availability/{date} {
       function isSlotList(value) {
         return value is list && value.size() <= 24;
       }
 
+      function isUsageMap(value) {
+        return value is map && value.size() <= 24;
+      }
+
+      // The minutes a visitor moved. One hour per request, and an hour's entry
+      // may never be dropped — only the desk (an authenticated write above)
+      // can lower or clear what a day already holds.
+      function movesOneHour() {
+        let before = resource.data.get('used', {});
+        let diff = request.resource.data.used.diff(before);
+        return diff.affectedKeys().size() == 1 && diff.removedKeys().size() == 0;
+      }
+
       allow read: if true;
       allow write: if isTeam();
 
-      allow create: if request.resource.data.keys().hasOnly(['taken']) &&
+      allow create: if request.resource.data.keys().hasOnly(['taken', 'used']) &&
+        isUsageMap(request.resource.data.used) &&
+        request.resource.data.used.size() == 1 &&
         isSlotList(request.resource.data.taken) &&
-        request.resource.data.taken.size() == 1;
+        request.resource.data.taken.size() <= 1;
 
-      allow update: if request.resource.data.keys().hasOnly(['taken']) &&
+      allow update: if request.resource.data.keys().hasOnly(['taken', 'used']) &&
+        isUsageMap(request.resource.data.used) &&
         isSlotList(request.resource.data.taken) &&
-        request.resource.data.taken.hasAll(resource.data.taken) &&
-        request.resource.data.taken.size() == resource.data.taken.size() + 1;
+        request.resource.data.taken.hasAll(resource.data.get('taken', [])) &&
+        movesOneHour();
     }
 
     // ── Timetable ───────────────────────────────────────────────────────────

@@ -1,34 +1,31 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { createReservation } from '../services/firestore'
-import { getBusySlots } from '../services/availability'
+import { getSlotUsage } from '../services/availability'
 import { normalizePhone, validateEgyptianPhone } from '../utils/validators'
 import { formatTime, todayISO } from '../utils/formatters'
-import { CLINIC_SLOTS, isSlotPast, slotOf } from '../utils/slots'
+import { CLINIC_SLOTS, fitsInSlot, isSlotPast, slotOf } from '../utils/slots'
 import { messageFor } from '../hooks/useLoader'
-
-interface Service {
-  id: string
-  name: string
-  description?: string
-  duration_minutes?: number
-  price?: number
-}
+import { sessionMinutes } from '../utils/services'
+import type { Service } from '../types'
 
 interface Props {
   service: Service | null
+  /** The types inside this service — she must pick one before booking. */
+  options?: Service[]
   onClose: () => void
 }
 
 interface FormState {
   name: string
   phone: string
+  option: string
   date: string
   time: string
   notes: string
 }
 
-const empty: FormState = { name: '', phone: '', date: '', time: '', notes: '' }
+const empty: FormState = { name: '', phone: '', option: '', date: '', time: '', notes: '' }
 
 /**
  * Public booking request — no account, no OTP, no login.
@@ -36,42 +33,54 @@ const empty: FormState = { name: '', phone: '', date: '', time: '', notes: '' }
  * `client_id`; the assistant links (or creates) the patient file when she
  * confirms the request from the dashboard.
  */
-export default function PublicBookingModal({ service, onClose }: Props) {
+export default function PublicBookingModal({ service, options = [], onClose }: Props) {
   const [form, setForm] = useState<FormState>(empty)
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({})
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
-  const [busy, setBusy] = useState<string[]>([])
+  /** Minutes already committed in each hour of the chosen day. */
+  const [usage, setUsage] = useState<Record<string, number>>({})
   const [checking, setChecking] = useState(false)
 
-  // The hours already gone on the chosen day. Read from the name-free mirror —
-  // the visitor learns that an hour is taken, never who booked it.
+  // How full each hour of the chosen day is. Read from the name-free mirror —
+  // the visitor learns how much of an hour is spoken for, never by whom.
   useEffect(() => {
     if (!form.date) return
     let live = true
-    getBusySlots(form.date)
-      .then(slots => {
-        if (!live) return
-        setBusy(slots)
-        // The day can fill up while she is still filling in her details.
-        setForm(f => (f.time && slots.includes(slotOf(f.time)) ? { ...f, time: '' } : f))
-      })
-      .catch(() => { if (live) setBusy([]) })
+    getSlotUsage(form.date)
+      .then(next => { if (live) setUsage(next) })
+      .catch(() => { if (live) setUsage({}) })
       .finally(() => { if (live) setChecking(false) })
     return () => { live = false }
   }, [form.date])
 
+  /** How much of the hour this booking will take — the type's length wins. */
+  const chosenService = options.find(o => o.id === form.option) ?? service
+  const minutes = sessionMinutes(chosenService, service ? [service, ...options] : options)
+
+  // An hour holds 60 minutes. A half-hour session sitting in it leaves room for
+  // a shorter one, so what counts as "taken" depends on what she picked.
   const slots = useMemo(
-    () => CLINIC_SLOTS.map(slot => ({
-      slot,
-      taken: busy.includes(slot),
-      past: isSlotPast(form.date, slot),
-    })),
-    [busy, form.date]
+    () => CLINIC_SLOTS.map(slot => {
+      const used = usage[slot] ?? 0
+      return {
+        slot,
+        used,
+        taken: !fitsInSlot(used, minutes),
+        past: isSlotPast(form.date, slot),
+      }
+    }),
+    [usage, minutes, form.date]
   )
 
   const freeCount = slots.filter(s => !s.taken && !s.past).length
   const dayFull = !!form.date && !checking && freeCount === 0
+
+  // The day can fill up while she is filling the form, and a longer type can
+  // shut an hour that was open when she picked it. Rather than quietly keeping
+  // a slot that no longer works, the field falls back to its placeholder — the
+  // option is disabled below, so there is nothing to select.
+  const time = slots.some(s => s.slot === form.time && !s.taken && !s.past) ? form.time : ''
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
@@ -94,10 +103,10 @@ export default function PublicBookingModal({ service, onClose }: Props) {
     if (form.name.trim().length < 2) next.name = 'من فضلك اكتبي اسمك'
     if (!form.phone.trim()) next.phone = 'من فضلك اكتبي رقم تليفونك'
     else if (!validateEgyptianPhone(form.phone)) next.phone = 'رقم التليفون مش صحيح'
+    if (options.length > 0 && !form.option) next.option = 'اختاري النوع'
     if (!form.date) next.date = 'اختاري التاريخ'
     else if (form.date < todayISO()) next.date = 'التاريخ لازم يكون النهاردة أو بعده'
-    if (!form.time) next.time = 'اختاري الوقت'
-    else if (busy.includes(slotOf(form.time))) next.time = 'المعاد ده محجوز — اختاري معاد تاني'
+    if (!time) next.time = 'اختاري الوقت'
     setErrors(next)
     return Object.keys(next).length === 0
   }
@@ -107,14 +116,17 @@ export default function PublicBookingModal({ service, onClose }: Props) {
     if (loading) return
     if (!validate()) return
 
-    // Someone may have claimed this hour while she was filling the form.
-    const fresh = await getBusySlots(form.date).catch(() => busy)
-    if (fresh.includes(slotOf(form.time))) {
-      setBusy(fresh)
+    // Someone may have claimed the rest of this hour while she filled the form.
+    const fresh = await getSlotUsage(form.date).catch(() => usage)
+    if (!fitsInSlot(fresh[slotOf(time)] ?? 0, minutes)) {
+      setUsage(fresh)
       setForm(f => ({ ...f, time: '' }))
       setErrors(e => ({ ...e, time: 'المعاد ده اتحجز للتو — اختاري معاد تاني' }))
       return
     }
+
+    // The booking lands on the type she picked; without types, on the service.
+    const chosen = options.find(o => o.id === form.option) ?? service
 
     setLoading(true)
     try {
@@ -123,8 +135,14 @@ export default function PublicBookingModal({ service, onClose }: Props) {
         client_id: null,
         client_name: form.name.trim(),
         client_phone: normalizePhone(form.phone),
-        service_id: service?.id ?? null,
-        service_name: service?.name ?? null,
+        service_id: chosen?.id ?? null,
+        // What the hour has to keep free for her.
+        duration_minutes: minutes,
+        // «ليزر — كانديلا»: every screen reads this one field, so both levels
+        // have to arrive already joined.
+        service_name: chosen
+          ? (chosen.id === service?.id ? chosen.name : `${service?.name} — ${chosen.name}`)
+          : null,
         pulses: null,
         price_per_pulse: null,
         // Priced after the session, once the pulse count is known
@@ -133,7 +151,7 @@ export default function PublicBookingModal({ service, onClose }: Props) {
         paid_amount: 0,
         payment_status: 'unpaid',
         date: form.date,
-        time: form.time,
+        time,
         notes: form.notes.trim(),
         status: 'pending',
         booked_by: 'client',
@@ -293,6 +311,26 @@ export default function PublicBookingModal({ service, onClose }: Props) {
               {errors.phone && <p style={errorStyle}>{errors.phone}</p>}
             </div>
 
+            {/* Only services that actually branch ask a second question —
+                «كشف» stays one click, «ليزر» asks which device. */}
+            {options.length > 0 && (
+              <div>
+                <label style={labelStyle} htmlFor="pb-option">النوع</label>
+                <select
+                  id="pb-option"
+                  style={fieldBorder('option')}
+                  value={form.option}
+                  onChange={e => set('option', e.target.value)}
+                >
+                  <option value="">اختاري النوع</option>
+                  {options.map(o => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                {errors.option && <p style={errorStyle}>{errors.option}</p>}
+              </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
               <div>
                 <label style={labelStyle} htmlFor="pb-date">التاريخ</label>
@@ -304,7 +342,7 @@ export default function PublicBookingModal({ service, onClose }: Props) {
                   value={form.date}
                   // A new day means a fresh set of hours — drop the old pick
                   onChange={e => {
-                    setBusy([])
+                    setUsage({})
                     // The lookup starts in the effect above; flag it here so the
                     // field doesn't flash "all free" before the answer lands.
                     setChecking(!!e.target.value)
@@ -321,15 +359,22 @@ export default function PublicBookingModal({ service, onClose }: Props) {
                 <select
                   id="pb-time"
                   style={{ ...fieldBorder('time'), opacity: !form.date || checking ? 0.55 : 1 }}
-                  value={form.time}
+                  value={time}
                   onChange={e => set('time', e.target.value)}
                   disabled={!form.date || checking}
                 >
                   <option value="">اختاري الوقت</option>
+                  {/* An hour is either open for this session or it isn't —
+                      how much of it is left is the clinic's business. */}
                   {slots.map(({ slot, taken, past }) => (
-                    <option key={slot} value={slot} disabled={taken || past}>
+                    <option
+                      key={slot}
+                      value={slot}
+                      disabled={taken || past}
+                      style={taken ? { color: '#C0392B' } : undefined}
+                    >
                       {formatTime(slot)}
-                      {taken ? ' — محجوز' : past ? ' — فات' : ''}
+                      {taken ? ' — مليان' : past ? ' — فات' : ''}
                     </option>
                   ))}
                 </select>
@@ -344,7 +389,7 @@ export default function PublicBookingModal({ service, onClose }: Props) {
                   ? 'بنشوف المواعيد المتاحة…'
                   : dayFull
                     ? 'اليوم ده محجوز بالكامل — من فضلك اختاري يوم تاني.'
-                    : `${freeCount} معاد فاضي — المواعيد المحجوزة ظاهرة باللون الباهت ومش هتقدري تختاريها.`}
+                    : `الجلسة دي ${minutes} دقيقة — ${freeCount} معاد ينفعوا ليها. الساعة اللي فيها وقت فاضي بتقول قد إيه فاضل فيها.`}
             </p>
 
             <div>
