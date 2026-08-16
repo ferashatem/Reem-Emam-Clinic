@@ -10,29 +10,35 @@ import EmptyState from '../../components/ui/EmptyState'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
 import { formatMoney, toNumber } from '../../utils/formatters'
-import { groupServices, sessionMinutes } from '../../utils/services'
+import { groupServices, sessionMinutes, fixedPrice } from '../../utils/services'
+import { BRANCHES, BRANCH_INFO, DEFAULT_BRANCH, branchOf } from '../../utils/branches'
 import { SLOT_MINUTES } from '../../utils/slots'
 import { C } from '../../theme'
-import type { Service } from '../../types'
+import type { Branch, Service } from '../../types'
 
 interface ServiceForm {
   name: string
   description: string
   duration_minutes: string
+  price: string
+  /** Which line sells it. Only asked for on a main service — a type inherits. */
+  branch: Branch
 }
 
 /** The lengths a session actually runs to — an hour holds 60 minutes of them. */
 const durationChoices = [15, 20, 30, 45, 60]
 
 /**
- * What a service costs, when it has a stored price at all. Prices aren't typed
- * here any more — the session's total is agreed and entered when it's closed —
- * so this only reports what older services still carry.
+ * What a service costs. The flat price is the one the client is quoted on the
+ * site before she books, so it wins over the per-pulse rate older laser
+ * services still carry — that one only decides how the session is totalled when
+ * it's closed.
  */
 function priceOf(s: Service) {
+  const flat = toNumber(s.price)
+  if (flat > 0) return { value: formatMoney(flat), note: 'سعر ثابت', perPulse: 0, priced: true }
   const perPulse = toNumber(s.price_per_pulse)
   if (perPulse > 0) return { value: formatMoney(perPulse), note: 'للنبضة الواحدة', perPulse, priced: true }
-  if (toNumber(s.price) > 0) return { value: formatMoney(s.price), note: 'سعر ثابت', perPulse: 0, priced: true }
   return { value: '', note: '', perPulse: 0, priced: false }
 }
 
@@ -48,6 +54,14 @@ export default function Services() {
   const services = data ?? []
   const groups = groupServices(services)
   const optionCount = services.length - groups.length
+  /** The catalogue split the way the place is: one list per line. */
+  const byBranch = BRANCHES
+    .map(branch => ({
+      branch,
+      groups: groups.filter(g => branchOf(g.service, services) === branch),
+    }))
+    // A line with nothing in it yet stays off the screen until it has a service.
+    .filter(b => b.groups.length > 0)
   const { confirm, dialog } = useConfirm()
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -57,8 +71,11 @@ export default function Services() {
   const [saving, setSaving] = useState(false)
   const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<ServiceForm>()
   const watchedDuration = watch('duration_minutes')
+  const watchedBranch = watch('branch')
 
-  const blank: ServiceForm = { name: '', description: '', duration_minutes: '' }
+  const blank: ServiceForm = {
+    name: '', description: '', duration_minutes: '', price: '', branch: DEFAULT_BRANCH,
+  }
 
   function openCreate() {
     setEditTarget(null)
@@ -71,7 +88,8 @@ export default function Services() {
   function openAddOption(main: Service) {
     setEditTarget(null)
     setParent(main)
-    reset(blank)
+    // A type is in the same room as its service — it never picks a line.
+    reset({ ...blank, branch: branchOf(main, services) })
     setModalOpen(true)
   }
 
@@ -82,6 +100,8 @@ export default function Services() {
       name: s.name ?? '',
       description: s.description ?? '',
       duration_minutes: toNumber(s.duration_minutes) > 0 ? String(s.duration_minutes) : '',
+      price: toNumber(s.price) > 0 ? String(s.price) : '',
+      branch: branchOf(s, services),
     })
     setModalOpen(true)
   }
@@ -89,9 +109,9 @@ export default function Services() {
   async function onSubmit(values: ServiceForm) {
     setSaving(true)
     try {
-      // Names and a session length. Editing leaves whatever price an older
-      // service still carries untouched — it's what the session sheet uses to
-      // work the total out — while anything new starts without one.
+      // Names, a session length, and the price the client is quoted on the
+      // site. The per-pulse rate is left alone: it belongs to the older laser
+      // services and only decides how a closed session is totalled.
       const payload: Record<string, unknown> = {
         name: values.name.trim(),
         parent_id: parent?.id ?? null,
@@ -99,9 +119,14 @@ export default function Services() {
         // 0 = a type falling back to its service's length, or an hour for a
         // service that never got one.
         duration_minutes: Math.min(toNumber(values.duration_minutes), SLOT_MINUTES),
+        // Blank on a type = sold at its service's price; blank on a service =
+        // no figure to quote until the session is closed.
+        price: toNumber(values.price) > 0 ? toNumber(values.price) : null,
+        // Only a main service stores a line; a type reads its parent's, so
+        // writing one here would be a second answer that could drift.
+        branch: parent ? null : values.branch,
       }
       if (!editTarget) {
-        payload.price = null
         payload.price_per_pulse = null
       }
       if (editTarget) {
@@ -170,8 +195,21 @@ export default function Services() {
       ) : groups.length === 0 ? (
         <EmptyState icon="✨" title="مفيش خدمات لسه" description="ضيفي أول خدمة عشان تظهر في الحجز وفي الموقع" action={addButton} />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {groups.map(({ service: s, options }) => {
+        <div className="space-y-8">
+          {byBranch.map(({ branch, groups: branchGroups }) => (
+            <section key={branch}>
+              {/* Two lists, because they're two different places — a heading is
+                  what stops «كشف» being read as another laser service. */}
+              <div className="flex items-center gap-2 mb-3">
+                <h2 className="text-sm font-bold" style={{ color: BRANCH_INFO[branch].color }}>
+                  {BRANCH_INFO[branch].icon} {BRANCH_INFO[branch].name}
+                </h2>
+                <span className="text-xs text-gray-400">{branchGroups.length} خدمة</span>
+                <span className="flex-1 h-px" style={{ backgroundColor: C.primarySoft }} />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {branchGroups.map(({ service: s, options }) => {
             const price = priceOf(s)
             return (
               <div key={s.id} className="bg-white rounded-2xl p-5 shadow-sm border flex flex-col" style={{ borderColor: C.primarySoft }}>
@@ -203,8 +241,8 @@ export default function Services() {
                     : 'السعر بيتحدد وقت إنهاء الجلسة'}
                 </div>
 
-                {/* The types are a choice of what gets used, not of what it
-                    costs — so they're names, and the price above covers them. */}
+                {/* A type can carry its own price — «كانديلا» and «ألكسندرايت»
+                    aren't the same money — and falls back to the service's. */}
                 {options.length > 0 && (
                   <div className="mb-4">
                     <p className="text-xs mb-2" style={{ color: C.primary }}>
@@ -221,6 +259,9 @@ export default function Services() {
                             <p className="text-sm font-semibold truncate" style={{ color: C.text }}>{o.name}</p>
                             <p className="text-xs text-gray-400 truncate tabular-nums">
                               {sessionMinutes(o, services)} دقيقة
+                              {fixedPrice(o, services) > 0
+                                ? ` · ${formatMoney(fixedPrice(o, services))}`
+                                : ''}
                               {o.description ? ` · ${o.description}` : ''}
                             </p>
                           </div>
@@ -278,6 +319,9 @@ export default function Services() {
               </div>
             )
           })}
+              </div>
+            </section>
+          ))}
         </div>
       )}
 
@@ -291,10 +335,41 @@ export default function Services() {
         }
       >
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          {parent && (
+          {parent ? (
             <p className="text-xs rounded-xl px-3 py-2" style={{ backgroundColor: C.bg, color: C.primary }}>
               العميلة هتختار «{parent.name}» الأول، وبعدين تختار النوع ده.
+              {' '}النوع بيتحجز في {BRANCH_INFO[branchOf(parent, services)].name} زي الخدمة اللي فوقه.
             </p>
+          ) : (
+            /* The line decides which room's hours this fills and which books
+               its money lands in — so it's the first question, not a detail. */
+            <Field label="بتتحجز فين؟" required>
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl" style={{ backgroundColor: C.bg }}>
+                {BRANCHES.map(b => {
+                  const info = BRANCH_INFO[b]
+                  const active = watchedBranch === b
+                  return (
+                    <button
+                      key={b}
+                      type="button"
+                      onClick={() => setValue('branch', b, { shouldDirty: true })}
+                      className="py-2.5 rounded-lg text-sm font-medium transition-colors"
+                      style={active
+                        ? { backgroundColor: info.color, color: '#fff' }
+                        : { color: C.text }}
+                    >
+                      {info.icon} {info.name}
+                    </button>
+                  )
+                })}
+              </div>
+              {editTarget && (
+                <p className="text-xs text-gray-400 mt-2">
+                  نقل الخدمة لخط تاني بيأثر على الحجوزات الجديدة بس — القديمة بتفضل
+                  في حسابات الخط اللي اتباعت فيه.
+                </p>
+              )}
+            </Field>
           )}
 
           <Field label={parent ? 'اسم النوع' : 'اسم الخدمة'} required error={errors.name?.message}>
@@ -309,9 +384,25 @@ export default function Services() {
             <Textarea {...register('description')} rows={2} placeholder="بيظهر للعملاء في الموقع" />
           </Field>
 
-          {/* No price here: the session's total is agreed with the client and
-              written down when the session is closed. The length, though, is
-              what decides whether another client still fits in the same hour. */}
+          {/* The figure the client reads on the site before she books, so it
+              has to be a number the clinic will actually honour. */}
+          <Field
+            label="السعر الثابت (جنيه)"
+            error={errors.price?.message}
+            hint={parent
+              ? 'سيبيه فاضي عشان ياخد سعر الخدمة الرئيسية'
+              : 'بيظهر للعملاء في صفحة الخدمات — سيبيه فاضي لو السعر بيتحدد بعد الجلسة'}
+          >
+            <Input
+              {...register('price', {
+                validate: v => (!v || toNumber(v) > 0 ? true : 'السعر لازم يكون أكبر من صفر'),
+              })}
+              invalid={!!errors.price}
+              type="number" inputMode="numeric" min={0} dir="ltr"
+              placeholder={parent && toNumber(parent.price) > 0 ? String(parent.price) : '٥٠٠'}
+            />
+          </Field>
+
           <Field
             label="مدة الجلسة (دقيقة)"
             error={errors.duration_minutes?.message}

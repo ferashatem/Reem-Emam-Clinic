@@ -3,11 +3,17 @@ import { db } from './firebase'
 import { todayISO } from '../utils/formatters'
 import { SLOT_MINUTES, minutesOf, slotOf, slotUsage } from '../utils/slots'
 import { sessionMinutes } from '../utils/services'
-import type { Reservation, Service } from '../types'
+import { BRANCHES, DEFAULT_BRANCH, reservationsOfBranch } from '../utils/branches'
+import type { Branch, Reservation, Service } from '../types'
 
 /**
- * A name-free mirror of each day's load — one doc per date:
- * `availability/2026-08-01 = { used: { '13:00': 45 }, taken: ['13:00'] }`.
+ * A name-free mirror of each day's load — one doc per date *per line*:
+ * `availability/2026-08-01_laser = { used: { '13:00': 45 }, taken: ['13:00'] }`.
+ *
+ * The two rooms run at the same time, so each keeps its own doc: an hour full
+ * in the laser centre is still open for a كشف. The key carries the line
+ * because the rules let a visitor write her own hour without signing in, and
+ * she must not be able to reach across into the other line's day.
  *
  * The public booking form needs to know what's still open, but it can never
  * read `reservations` — patient names and phones live there. So it reads this
@@ -21,9 +27,21 @@ import type { Reservation, Service } from '../types'
  */
 const COL = 'availability'
 
+/**
+ * The doc holding one line's load on one day. The laser centre keeps the bare
+ * date it always used, so every day already published stays exactly where the
+ * public form looks for it — only the newer line takes a suffix.
+ */
+function dayKey(date: string, branch: Branch): string {
+  return branch === DEFAULT_BRANCH ? date : `${date}_${branch}`
+}
+
 /** The stored day, exactly as it sits in the doc. */
-async function readDay(date: string): Promise<{ used: Record<string, number>; taken: string[] }> {
-  const snap = await getDoc(doc(db, COL, date))
+async function readDay(
+  date: string,
+  branch: Branch
+): Promise<{ used: Record<string, number>; taken: string[] }> {
+  const snap = await getDoc(doc(db, COL, dayKey(date, branch)))
   if (!snap.exists()) return { used: {}, taken: [] }
   const data = snap.data()
 
@@ -40,10 +58,13 @@ async function readDay(date: string): Promise<{ used: Record<string, number>; ta
   return { used, taken }
 }
 
-/** Minutes committed per hour on `date`. Readable by anyone. */
-export async function getSlotUsage(date: string): Promise<Record<string, number>> {
+/** Minutes committed per hour on `date`, in one line. Readable by anyone. */
+export async function getSlotUsage(
+  date: string,
+  branch: Branch = DEFAULT_BRANCH
+): Promise<Record<string, number>> {
   if (!date) return {}
-  const { used, taken } = await readDay(date)
+  const { used, taken } = await readDay(date, branch)
   // A day written before sessions had lengths only lists hours — each of those
   // held someone for the whole hour, so that's what it still means.
   const usage: Record<string, number> = {}
@@ -68,10 +89,17 @@ export async function syncBusySlots(
 ) {
   if (!date) return
   const byId = new Map(services.map(s => [s.id, s]))
-  const usage = Object.fromEntries(
-    slotUsage(reservations, date, null, r => sessionMinutes(byId.get(r.service_id), services))
-  )
-  await setDoc(doc(db, COL, date), { used: usage, taken: fullSlots(usage) })
+  // Each line's room is rebuilt from its own bookings — one day, two docs.
+  for (const branch of BRANCHES) {
+    const usage = Object.fromEntries(
+      slotUsage(
+        reservationsOfBranch(reservations, branch, services),
+        date, null,
+        r => sessionMinutes(byId.get(r.service_id), services)
+      )
+    )
+    await setDoc(doc(db, COL, dayKey(date, branch)), { used: usage, taken: fullSlots(usage) })
+  }
 }
 
 let backfilled = false
@@ -107,11 +135,16 @@ export async function backfillAvailability(reservations: Reservation[], services
  * — which is all the rules let an unauthenticated writer do. The desk's next
  * write rebuilds the day properly.
  */
-export async function holdSlot(date: string, time: string, minutes?: number | null) {
+export async function holdSlot(
+  date: string,
+  time: string,
+  minutes?: number | null,
+  branch: Branch = DEFAULT_BRANCH
+) {
   const slot = slotOf(time)
   if (!date || !slot) return
 
-  const { used, taken } = await readDay(date)
+  const { used, taken } = await readDay(date, branch)
   const taking = minutesOf({ duration_minutes: minutes ?? null })
   // The hour she's claiming may only be described by the old `taken` list — she
   // still starts from what that meant (a full hour), but writes nothing about
@@ -119,7 +152,7 @@ export async function holdSlot(date: string, time: string, minutes?: number | nu
   const before = used[slot] ?? (taken.includes(slot) ? SLOT_MINUTES : 0)
   const nextUsed = { ...used, [slot]: Math.min(SLOT_MINUTES, before + taking) }
 
-  await setDoc(doc(db, COL, date), {
+  await setDoc(doc(db, COL, dayKey(date, branch)), {
     used: nextUsed,
     // `taken` only ever grows here — dropping an hour someone else's booking
     // filled is the desk's job, and it rebuilds the whole day when it does.

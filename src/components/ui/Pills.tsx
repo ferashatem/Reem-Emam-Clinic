@@ -1,6 +1,7 @@
 import { C } from '../../theme'
-import type { Reservation, Service } from '../../types'
+import type { Branch, Reservation, Service } from '../../types'
 import { isPerPulse } from '../../utils/pricing'
+import { BRANCH_INFO } from '../../utils/branches'
 
 const pill =
   'inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-lg text-[11px] font-semibold'
@@ -21,6 +22,25 @@ export function PricingPill({
         : { backgroundColor: '#EFF6FF', color: C.blue }}
     >
       {perPulse ? '◈ بالنبضة' : '● سعر ثابت'}
+    </span>
+  )
+}
+
+/**
+ * Which line a row belongs to. Only worth showing on a view holding both —
+ * inside a single line's screen every row would carry the same badge, which
+ * says nothing.
+ */
+export function BranchPill({
+  branch, className = '',
+}: { branch: Branch; className?: string }) {
+  const info = BRANCH_INFO[branch]
+  return (
+    <span
+      className={`${pill} ${className}`}
+      style={{ backgroundColor: `${info.color}14`, color: info.color }}
+    >
+      {info.icon} {info.short}
     </span>
   )
 }

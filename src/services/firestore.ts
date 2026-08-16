@@ -6,8 +6,9 @@ import type { DocumentData } from 'firebase/firestore'
 import { auth, db } from './firebase'
 import { holdSlot, syncBusySlots } from './availability'
 import { monthKey, toNumber, todayISO } from '../utils/formatters'
+import { asBranch, branchOfReservation } from '../utils/branches'
 import type {
-  Client, Expense, MonthlyClosing, Payment, Reservation,
+  Branch, Client, Expense, MonthlyClosing, Payment, Reservation,
   SessionReport, Service, TeamMember,
 } from '../types'
 
@@ -155,11 +156,17 @@ export async function softDeleteClient(id: string) {
 // ─── Reservations ────────────────────────────────────────────────────────────
 
 export async function getReservations(
-  filters?: { adminId?: string; date?: string; month?: string; status?: string }
+  filters?: { adminId?: string; date?: string; month?: string; status?: string; branch?: Branch }
 ): Promise<Reservation[]> {
   const snap = await getDocs(collection(db, 'reservations'))
   let results = live<Reservation>(snap.docs).sort(byDateDesc)
 
+  // Filtered on the booking's own snapshot, so a service moved between lines
+  // doesn't retroactively move the sessions it was already sold for.
+  if (filters?.branch) {
+    const branch = filters.branch
+    results = results.filter(r => branchOfReservation(r) === branch)
+  }
   if (filters?.adminId) results = results.filter(r => r.admin_id === filters.adminId)
   if (filters?.date) results = results.filter(r => r.date === filters.date)
   if (filters?.month) results = results.filter(r => (r.date ?? '').startsWith(filters.month!))
@@ -209,7 +216,10 @@ export async function createReservation(data: DocumentData) {
       await holdSlot(
         String(data.date ?? ''),
         String(data.time ?? ''),
-        data.duration_minutes as number | null | undefined
+        data.duration_minutes as number | null | undefined,
+        // Her hour is claimed in the room she booked — the other line's day
+        // must not move because of a booking that isn't in it.
+        asBranch(data.branch)
       )
     } catch { /* the request is in — the desk's next write fixes the mirror */ }
   }
@@ -300,10 +310,14 @@ export async function updateReview(id: string, data: Partial<DocumentData>) {
 // ─── Payments / Collections (التحصيلات) ──────────────────────────────────────
 
 export async function getPayments(
-  filters?: { staffId?: string; date?: string; month?: string; clientId?: string }
+  filters?: { staffId?: string; date?: string; month?: string; clientId?: string; branch?: Branch }
 ): Promise<Payment[]> {
   const snap = await getDocs(collection(db, 'payments'))
   let results = live<Payment>(snap.docs).sort(bySeconds('created_at'))
+  if (filters?.branch) {
+    const branch = filters.branch
+    results = results.filter(p => asBranch(p.branch) === branch)
+  }
   if (filters?.staffId) results = results.filter(p => p.staff_id === filters.staffId)
   if (filters?.date) results = results.filter(p => p.date === filters.date)
   if (filters?.month) results = results.filter(p => monthOf(p) === filters.month)
@@ -335,12 +349,17 @@ export async function createPayment(data: DocumentData) {
 
   await runTransaction(db, async (tx) => {
     let reservationUpdate: { ref: ReturnType<typeof doc>; paid: number; total: number } | null = null
+    // The books are kept per line, so the money has to land in the same one
+    // that sold the session. Read off the booking rather than trusted from the
+    // caller — the screen collecting it may be showing both lines at once.
+    let branch = asBranch(data.branch)
 
     if (reservationId) {
       const resRef = doc(db, 'reservations', reservationId)
       const resSnap = await tx.get(resRef)
       if (resSnap.exists()) {
         const res = resSnap.data() as Reservation
+        branch = branchOfReservation(res)
         reservationUpdate = {
           ref: resRef,
           paid: toNumber(res.paid_amount) + amount,
@@ -351,6 +370,7 @@ export async function createPayment(data: DocumentData) {
 
     tx.set(paymentRef, {
       ...data,
+      branch,
       amount,
       date,
       month: monthKey(date),
@@ -448,9 +468,15 @@ export function paymentStatusFor(paid: number, total: number): 'unpaid' | 'parti
 
 // ─── Expenses (المصاريف) ─────────────────────────────────────────────────────
 
-export async function getExpenses(filters?: { month?: string }): Promise<Expense[]> {
+export async function getExpenses(
+  filters?: { month?: string; branch?: Branch }
+): Promise<Expense[]> {
   const snap = await getDocs(collection(db, 'expenses'))
   let results = live<Expense>(snap.docs).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+  if (filters?.branch) {
+    const branch = filters.branch
+    results = results.filter(e => asBranch(e.branch) === branch)
+  }
   if (filters?.month) results = results.filter(e => monthOf(e) === filters.month)
   return results
 }
@@ -486,16 +512,33 @@ export async function getMonthlyClosings(): Promise<MonthlyClosing[]> {
     .sort((a, b) => (b.month ?? '').localeCompare(a.month ?? ''))
 }
 
-export async function getMonthlyClosing(month: string): Promise<MonthlyClosing | null> {
-  const snap = await getDoc(doc(db, 'monthly_closings', month))
+/**
+ * Where a month's closing lives. Each line signs off its own جرد, so the month
+ * alone is no longer unique. The laser centre keeps the bare month it always
+ * used, so the closings already signed stay exactly where they are.
+ */
+export function closingId(month: string, branch: Branch): string {
+  return branch === 'laser' ? month : `${month}_${branch}`
+}
+
+export async function getMonthlyClosing(
+  month: string,
+  branch: Branch = 'laser'
+): Promise<MonthlyClosing | null> {
+  const snap = await getDoc(doc(db, 'monthly_closings', closingId(month, branch)))
   return snap.exists() ? ({ id: snap.id, ...snap.data() } as MonthlyClosing) : null
 }
 
-/** Document ID is the month itself, so closing twice overwrites rather than duplicates. */
-export async function saveMonthlyClosing(month: string, data: DocumentData) {
-  return setDoc(doc(db, 'monthly_closings', month), {
+/** Keyed by month + line, so closing twice overwrites rather than duplicates. */
+export async function saveMonthlyClosing(
+  month: string,
+  branch: Branch,
+  data: DocumentData
+) {
+  return setDoc(doc(db, 'monthly_closings', closingId(month, branch)), {
     ...data,
     month,
+    branch,
     closed_at: now(),
   })
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -15,7 +15,7 @@ import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
 import Tabs from '../../components/ui/Tabs'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
-import { PricingPill, SourcePill } from '../../components/ui/Pills'
+import { BranchPill, PricingPill, SourcePill } from '../../components/ui/Pills'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
 import {
@@ -28,12 +28,17 @@ import {
 import {
   CLINIC_SLOTS, takenSlots, slotUsage, fitsInSlot, freeMinutes, isSlotPast, slotOf,
 } from '../../utils/slots'
+import {
+  BRANCHES, BRANCH_INFO, branchOf, branchOfReservation, reservationsOfBranch,
+} from '../../utils/branches'
 import { normalizePhone, validateEgyptianPhone } from '../../utils/validators'
 import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsapp'
 import { C } from '../../theme'
-import type { Client, Reservation, Service } from '../../types'
+import type { Branch, Client, Reservation, Service } from '../../types'
 
 type TabKey = 'requests' | 'today' | 'upcoming' | 'past'
+/** The desk can work one line at a time, or watch both at once. */
+type BranchFilter = Branch | 'all'
 
 /**
  * A booking is only who, what, and when. The pulse count — and so the price —
@@ -81,6 +86,11 @@ export default function StaffReservations() {
   const services = useMemo(() => data?.services ?? [], [data])
 
   const [tab, setTab] = useState<TabKey>('today')
+  /**
+   * Which line's book is on screen. It starts on both so nothing goes unseen
+   * on a shared desk; switching narrows every tab, count and row below.
+   */
+  const [branchFilter, setBranchFilter] = useState<BranchFilter>('all')
   const [search, setSearch] = useState('')
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Reservation | null>(null)
@@ -111,6 +121,13 @@ export default function StaffReservations() {
     return pricedService(serviceMap[r.service_id], services)
   }
 
+  /** How many bookings each line is carrying, for the switcher's counts. */
+  const branchCounts = useMemo(() => {
+    const counts = { laser: 0, consult: 0 } as Record<Branch, number>
+    for (const r of reservations) counts[branchOfReservation(r, services)]++
+    return counts
+  }, [reservations, services])
+
   // ─── Bucketing: website requests / today / upcoming / done ────────────────
   const buckets = useMemo(() => {
     const today = todayISO()
@@ -119,7 +136,11 @@ export default function StaffReservations() {
     const upcoming: Reservation[] = []
     const past: Reservation[] = []
 
-    for (const r of reservations) {
+    const inScope = branchFilter === 'all'
+      ? reservations
+      : reservationsOfBranch(reservations, branchFilter, services)
+
+    for (const r of inScope) {
       if (r.status === 'pending' && r.booked_by === 'client') {
         requests.push(r)
         continue
@@ -144,7 +165,7 @@ export default function StaffReservations() {
       upcoming: upcoming.sort(byTime),
       past: past.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`)),
     }
-  }, [reservations])
+  }, [reservations, branchFilter, services])
 
   const visible = useMemo(() => {
     const list = buckets[tab]
@@ -266,14 +287,43 @@ export default function StaffReservations() {
   const form = useForm<BookingForm>({ defaultValues: emptyForm })
   const { register, handleSubmit, reset, watch, setValue, formState: { errors } } = form
 
+  /**
+   * A website request being edited: it carries a name and a phone but no
+   * patient file yet. The file is opened when the request is *confirmed*, so
+   * editing one — moving it to another hour, fixing a misspelt name — has to
+   * leave it unlinked. Otherwise a request the desk only rescheduled would
+   * turn into a patient who has still never walked in.
+   */
+  const editingRequest = !!editTarget && !editTarget.client_id
+
+  /**
+   * Which client question the form is actually asking right now. The rules
+   * below stay attached to their fields even while those fields are off
+   * screen, so they read this instead of a value captured when they were
+   * registered — a stale `required` is what made a request impossible to edit.
+   */
+  const mode = useRef<'picker' | 'new' | 'request'>('picker')
+  mode.current = editingRequest ? 'request' : isNewClient ? 'new' : 'picker'
+
   const watchedMain = watch('main_id')
   const watchedClientId = watch('client_id')
   const watchedDate = watch('date')
   const watchedTime = watch('time')
 
+  /**
+   * Which line the booking being written belongs to — it follows the service
+   * picked, since that's what decides which room she sits in. Everything below
+   * (which hours are free, who's already in them) is asked of this line alone.
+   */
+  const formBranch = branchOf(serviceMap[watchedMain], services)
+
   const mainServices = useMemo(
-    () => groupServices(services).map(g => g.service),
-    [services]
+    () => groupServices(services)
+      .map(g => g.service)
+      // On a line-specific view, only that line's services are offerable —
+      // booking a كشف from the laser tab is how the two get mixed up again.
+      .filter(s => branchFilter === 'all' || branchOf(s, services) === branchFilter),
+    [services, branchFilter]
   )
   /** The types inside the chosen service — empty when it's booked directly. */
   const serviceOptions = useMemo(
@@ -309,16 +359,22 @@ export default function StaffReservations() {
   // How full each hour of the chosen day is. The bookings are already in
   // memory, so no extra read — `onSubmit` re-checks against fresh data before
   // writing, in case someone booked from another screen meanwhile.
+  /** The chosen line's bookings — the other room's hours are none of its business. */
+  const branchReservations = useMemo(
+    () => reservationsOfBranch(reservations, formBranch, services),
+    [reservations, formBranch, services]
+  )
+
   const usage = useMemo(
     // A booking from before sessions had lengths takes whatever its service
     // runs to today, so the desk sees the same free minutes the site does.
-    () => slotUsage(reservations, watchedDate, editTarget?.id,
+    () => slotUsage(branchReservations, watchedDate, editTarget?.id,
       r => sessionMinutes(serviceMap[r.service_id], services)),
-    [reservations, watchedDate, editTarget, serviceMap, services]
+    [branchReservations, watchedDate, editTarget, serviceMap, services]
   )
   const whoIsIn = useMemo(
-    () => takenSlots(reservations, watchedDate, editTarget?.id),
-    [reservations, watchedDate, editTarget]
+    () => takenSlots(branchReservations, watchedDate, editTarget?.id),
+    [branchReservations, watchedDate, editTarget]
   )
 
   const slotOptions = useMemo(() => {
@@ -364,6 +420,10 @@ export default function StaffReservations() {
     reset({
       ...emptyForm,
       client_id: r.client_id,
+      // An unconfirmed request has no file to point at, so its name and phone
+      // are edited directly on the booking.
+      new_name: r.client_name ?? '',
+      new_phone: r.client_phone ?? '',
       // A booking points at whatever was booked — walk back up to its service
       // so the first select opens on the right one.
       main_id: serviceMap[r.service_id]?.parent_id || r.service_id,
@@ -403,17 +463,23 @@ export default function StaffReservations() {
   async function onSubmit(values: BookingForm) {
     setSaving(true)
     try {
-      const client = await resolveClient(values)
+      // A request keeps its visitor details on the booking; everything else
+      // resolves to a patient file before it's written.
+      const client = editingRequest ? null : await resolveClient(values)
       // A service with no types inside is booked as itself.
       const serviceId = optionsOf(services, values.main_id).length > 0
         ? values.service_id
         : values.main_id
       const service = serviceMap[serviceId]
       const takes = sessionMinutes(service, services)
+      const branch = branchOf(service, services)
 
       // The list on screen can be minutes old — re-read the day before writing
-      // so two people booking at once can't overrun the same hour.
-      const sameDay = await getReservations({ date: values.date })
+      // so two people booking at once can't overrun the same hour. Only this
+      // line's room counts: the other one is free regardless of what's in it.
+      const sameDay = reservationsOfBranch(
+        await getReservations({ date: values.date }), branch, services
+      )
       const slot = slotOf(values.time)
       const used = slotUsage(sameDay, values.date, editTarget?.id,
         x => sessionMinutes(serviceMap[x.service_id], services)).get(slot) ?? 0
@@ -426,11 +492,16 @@ export default function StaffReservations() {
 
       const rate = perPulseOf(pricedService(service, services))
       const payload: Record<string, unknown> = {
-        client_id: client.id,
-        client_name: client.name ?? '',
-        client_phone: client.phone ?? '',
+        ...(client
+          ? { client_id: client.id, client_name: client.name ?? '', client_phone: client.phone ?? '' }
+          // `client_id` is left exactly as it was — null — so the request still
+          // has to be confirmed before it becomes a patient.
+          : { client_name: values.new_name.trim(), client_phone: normalizePhone(values.new_phone) }),
         service_id: serviceId,
         service_name: serviceLabel(service, services),
+        // Pinned now, like the name and the rate: this is the line that sold
+        // the session, and it stays that even if the service moves later.
+        branch,
         // What the hour has to keep free for her.
         duration_minutes: takes,
         date: values.date,
@@ -500,6 +571,35 @@ export default function StaffReservations() {
       )}
 
       <div className="space-y-3 mb-5">
+        {/* Which book the desk is looking at. Everything under it — the tabs,
+            their counts, the rows, and the services the form offers — narrows
+            to the line picked here. */}
+        <div className="flex gap-2 p-1 rounded-xl overflow-x-auto" style={{ backgroundColor: C.bg }}>
+          {([
+            { value: 'all' as const, label: 'الكل', icon: '📋', color: C.primary, count: reservations.length },
+            ...BRANCHES.map(b => ({
+              value: b,
+              label: BRANCH_INFO[b].name,
+              icon: BRANCH_INFO[b].icon,
+              color: BRANCH_INFO[b].color,
+              count: branchCounts[b],
+            })),
+          ]).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setBranchFilter(opt.value)}
+              className="flex-1 whitespace-nowrap py-2.5 px-3 rounded-lg text-sm font-medium transition-colors"
+              style={branchFilter === opt.value
+                ? { backgroundColor: opt.color, color: '#fff' }
+                : { color: C.text }}
+            >
+              {opt.icon} {opt.label}
+              <span className="text-xs opacity-70"> ({opt.count})</span>
+            </button>
+          ))}
+        </div>
+
         <Tabs tabs={tabs} value={tab} onChange={setTab} />
         <Input
           value={search}
@@ -531,6 +631,7 @@ export default function StaffReservations() {
                 name={nameOf(r)}
                 service={serviceOf(r)}
                 serviceDoc={rateDocOf(r)}
+                branch={branchFilter === 'all' ? branchOfReservation(r, services) : null}
                 collecting={collecting}
                 busy={busyId === r.id}
                 waHref={waLink(r)}
@@ -564,7 +665,12 @@ export default function StaffReservations() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         <p>{serviceOf(r)}</p>
-                        <PricingPill reservation={r} service={rateDocOf(r)} className="mt-1" />
+                        <div className="flex items-center gap-1.5 mt-1">
+                          {branchFilter === 'all' && (
+                            <BranchPill branch={branchOfReservation(r, services)} />
+                          )}
+                          <PricingPill reservation={r} service={rateDocOf(r)} />
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-gray-600 tabular-nums">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(r.date)}</td>
@@ -626,13 +732,18 @@ export default function StaffReservations() {
             </div>
           )}
 
-          {isNewClient && !editTarget ? (
+          {mode.current !== 'picker' ? (
             <div className="space-y-4">
+              {editingRequest && (
+                <p className="text-xs rounded-xl px-3 py-2.5" style={{ backgroundColor: '#FFF7ED', color: '#9A3412' }}>
+                  ده لسه طلب من الموقع — الملف بيتفتح لما تأكديه، فالتعديل هنا على الطلب نفسه.
+                </p>
+              )}
               <Field label="اسم العميلة" required error={errors.new_name?.message}>
                 <Input
                   {...register('new_name', {
-                    required: 'اكتبي اسم العميلة',
-                    minLength: { value: 2, message: 'الاسم قصير أوي' },
+                    validate: v => mode.current === 'picker' ||
+                      (v ?? '').trim().length >= 2 || 'اكتبي اسم العميلة',
                   })}
                   invalid={!!errors.new_name}
                   placeholder="مثال: سارة أحمد"
@@ -642,8 +753,8 @@ export default function StaffReservations() {
                 <Field label="رقم التليفون" required error={errors.new_phone?.message}>
                   <Input
                     {...register('new_phone', {
-                      required: 'اكتبي رقم التليفون',
-                      validate: v => validateEgyptianPhone(v) || 'الرقم مش صحيح',
+                      validate: v => mode.current === 'picker' ||
+                        validateEgyptianPhone(v) || 'الرقم مش صحيح',
                     })}
                     invalid={!!errors.new_phone}
                     dir="ltr"
@@ -651,9 +762,13 @@ export default function StaffReservations() {
                     placeholder="01012345678"
                   />
                 </Field>
-                <Field label="السن" error={errors.new_age?.message}>
-                  <Input {...register('new_age')} type="number" inputMode="numeric" min={1} max={120} placeholder="اختياري" />
-                </Field>
+                {/* The age belongs to a patient file, and a request hasn't got
+                    one yet — asking for it here would drop it on save. */}
+                {!editingRequest && (
+                  <Field label="السن" error={errors.new_age?.message}>
+                    <Input {...register('new_age')} type="number" inputMode="numeric" min={1} max={120} placeholder="اختياري" />
+                  </Field>
+                )}
               </div>
             </div>
           ) : (
@@ -664,7 +779,12 @@ export default function StaffReservations() {
                   onChange={e => setClientSearch(e.target.value)}
                   placeholder="ابحثي بالاسم أو الرقم..."
                 />
-                <input type="hidden" {...register('client_id', { required: 'اختاري العميلة' })} />
+                <input
+                  type="hidden"
+                  {...register('client_id', {
+                    validate: v => mode.current !== 'picker' || !!v || 'اختاري العميلة',
+                  })}
+                />
                 <div
                   className="max-h-52 overflow-y-auto rounded-xl border divide-y"
                   style={{ borderColor: errors.client_id ? '#ef4444' : C.primarySoft }}
@@ -913,9 +1033,15 @@ function RowActions({
 }
 
 function ReservationCard({
-  r, name, service, serviceDoc, collecting, busy, waHref,
+  r, name, service, serviceDoc, branch, collecting, busy, waHref,
   onConfirm, onComplete, onCancel, onEdit, onDelete,
-}: ActionProps & { name: string; service: string; serviceDoc?: Service }) {
+}: ActionProps & {
+  name: string
+  service: string
+  serviceDoc?: Service
+  /** Null on a single-line view, where every card would say the same thing. */
+  branch: Branch | null
+}) {
   const overdue = r.status !== 'completed' && r.status !== 'cancelled' && isPastSlot(r.date, r.time)
 
   return (
@@ -927,7 +1053,8 @@ function ReservationCard({
         <div className="min-w-0">
           <p className="font-semibold text-sm truncate" style={{ color: C.text }}>{name}</p>
           <p className="text-xs text-gray-500 mt-0.5 truncate">{service}</p>
-          <div className="flex items-center gap-2 mt-1.5">
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            {branch && <BranchPill branch={branch} />}
             <PricingPill reservation={r} service={serviceDoc} />
             <SourcePill bookedBy={r.booked_by} />
           </div>

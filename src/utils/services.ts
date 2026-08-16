@@ -80,6 +80,36 @@ export function pricedService(
 }
 
 /**
+ * The flat price a client can be quoted before booking. A variant with no price
+ * of its own is sold at its service's price, so the two levels answer the same
+ * question. 0 = nothing fixed to quote (a per-pulse service, or one that has
+ * never been priced).
+ */
+export function fixedPrice(service: Service | undefined | null, all: Service[]): number {
+  if (!service) return 0
+  const own = toNumber(service.price)
+  if (own > 0) return own
+  const parent = service.parent_id ? all.find(s => s.id === service.parent_id) : null
+  return Math.max(0, toNumber(parent?.price))
+}
+
+/**
+ * What a whole card costs. A service whose variants are priced one by one has a
+ * span rather than a number — «من ٥٠٠ لـ ٩٠٠» — so the client sees what the
+ * cheapest and dearest choices inside it are before she opens the form.
+ */
+export function priceRange(
+  group: ServiceGroup,
+  all: Service[]
+): { min: number; max: number } | null {
+  const prices = group.options.length > 0
+    ? group.options.map(o => fixedPrice(o, all)).filter(p => p > 0)
+    : [fixedPrice(group.service, all)].filter(p => p > 0)
+  if (prices.length === 0) return null
+  return { min: Math.min(...prices), max: Math.max(...prices) }
+}
+
+/**
  * What goes on the booking: «ليزر — كانديلا» for a variant, the plain name for a
  * service booked directly. Every screen reads `service_name`, so the two levels
  * have to arrive there already joined.
