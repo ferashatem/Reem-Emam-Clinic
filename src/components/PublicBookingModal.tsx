@@ -6,7 +6,8 @@ import { normalizePhone, validateEgyptianPhone } from '../utils/validators'
 import { formatTime, todayISO } from '../utils/formatters'
 import { CLINIC_SLOTS, fitsInSlot, isSlotPast, slotOf } from '../utils/slots'
 import { messageFor } from '../hooks/useLoader'
-import { sessionMinutes } from '../utils/services'
+import { sessionMinutes, fixedPrice } from '../utils/services'
+import { BRANCH_INFO, branchOf } from '../utils/branches'
 import type { Service } from '../types'
 
 interface Props {
@@ -42,21 +43,31 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
   const [usage, setUsage] = useState<Record<string, number>>({})
   const [checking, setChecking] = useState(false)
 
+  /**
+   * Which line she's booking into. The two rooms run at the same time, so the
+   * hours she's offered are that room's alone — a full laser day says nothing
+   * about whether the كشف can see her.
+   */
+  const branch = branchOf(service, service ? [service, ...options] : options)
+
   // How full each hour of the chosen day is. Read from the name-free mirror —
   // the visitor learns how much of an hour is spoken for, never by whom.
   useEffect(() => {
     if (!form.date) return
     let live = true
-    getSlotUsage(form.date)
+    getSlotUsage(form.date, branch)
       .then(next => { if (live) setUsage(next) })
       .catch(() => { if (live) setUsage({}) })
       .finally(() => { if (live) setChecking(false) })
     return () => { live = false }
-  }, [form.date])
+  }, [form.date, branch])
 
   /** How much of the hour this booking will take — the type's length wins. */
   const chosenService = options.find(o => o.id === form.option) ?? service
-  const minutes = sessionMinutes(chosenService, service ? [service, ...options] : options)
+  const catalogue = service ? [service, ...options] : options
+  const minutes = sessionMinutes(chosenService, catalogue)
+  /** What she's being quoted for the choice she's made so far. 0 = nothing fixed. */
+  const price = fixedPrice(chosenService, catalogue)
 
   // An hour holds 60 minutes. A half-hour session sitting in it leaves room for
   // a shorter one, so what counts as "taken" depends on what she picked.
@@ -117,7 +128,7 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
     if (!validate()) return
 
     // Someone may have claimed the rest of this hour while she filled the form.
-    const fresh = await getSlotUsage(form.date).catch(() => usage)
+    const fresh = await getSlotUsage(form.date, branch).catch(() => usage)
     if (!fitsInSlot(fresh[slotOf(time)] ?? 0, minutes)) {
       setUsage(fresh)
       setForm(f => ({ ...f, time: '' }))
@@ -133,6 +144,8 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
       await createReservation({
         // No account yet — the assistant links this to a patient file on confirm
         client_id: null,
+        // The room she'll sit in, and the books this session belongs to.
+        branch,
         client_name: form.name.trim(),
         client_phone: normalizePhone(form.phone),
         service_id: chosen?.id ?? null,
@@ -255,7 +268,20 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
               {done ? 'تم إرسال طلبك 🌸' : 'احجزي موعدك 🌸'}
             </h2>
             {service && !done && (
-              <p style={{ fontSize: '0.85rem', color: '#C9956C', marginTop: '0.25rem' }}>{service.name}</p>
+              <p style={{ fontSize: '0.85rem', color: '#C9956C', marginTop: '0.25rem' }}>
+                <span style={{ color: BRANCH_INFO[branch].color, fontWeight: 600 }}>
+                  {BRANCH_INFO[branch].icon} {BRANCH_INFO[branch].name}
+                </span>
+                {' · '}
+                {service.name}
+                {/* The quote follows her choice: the service's price until she
+                    picks a type, then that type's. */}
+                {price > 0 && (
+                  <strong style={{ color: '#8B3A52' }}>
+                    {' · '}{Math.round(price).toLocaleString('ar-EG')} جنيه
+                  </strong>
+                )}
+              </p>
             )}
           </div>
           <button
@@ -321,9 +347,14 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
                   onChange={e => set('option', e.target.value)}
                 >
                   <option value="">اختاري النوع</option>
-                  {options.map(o => (
-                    <option key={o.id} value={o.id}>{o.name}</option>
-                  ))}
+                  {options.map(o => {
+                    const p = fixedPrice(o, catalogue)
+                    return (
+                      <option key={o.id} value={o.id}>
+                        {o.name}{p > 0 ? ` — ${Math.round(p).toLocaleString('ar-EG')} جنيه` : ''}
+                      </option>
+                    )
+                  })}
                 </select>
                 {errors.option && <p style={errorStyle}>{errors.option}</p>}
               </div>

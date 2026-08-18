@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { getActiveServices } from "../../services/firestore";
 import PublicBookingModal from "../../components/PublicBookingModal";
 import Navbar from "../../components/Navbar";
-import { groupServices } from "../../utils/services";
+import { groupServices, fixedPrice, priceRange } from "../../utils/services";
+import { BRANCHES, BRANCH_INFO, branchOf } from "../../utils/branches";
 import type { ServiceGroup } from "../../utils/services";
 import type { Service } from "../../types";
 import "../../App.css";
@@ -59,6 +60,11 @@ export default function ServicesPage() {
 
   // One card per main service; the types inside it are picked in the modal.
   const groups = groupServices(services);
+  /** The catalogue as the visitor should meet it: one list per line. */
+  const byBranch = BRANCHES.map((branch) => ({
+    branch,
+    groups: groups.filter((g) => branchOf(g.service, services) === branch),
+  })).filter((b) => b.groups.length > 0);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -199,21 +205,53 @@ export default function ServicesPage() {
             </p>
           </div>
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
-              gap: "1.8rem",
-            }}
-          >
-            {groups.map((group) => (
-              <ServiceCard
-                key={group.service.id}
-                group={group}
-                onBook={handleBookClick}
-              />
-            ))}
-          </div>
+          /* One section per line. They're two different places under one roof,
+             and a visitor looking for a كشف shouldn't have to read past the
+             laser catalogue to find it. */
+          byBranch.map(({ branch, groups: branchGroups }) => (
+            <section key={branch} style={{ marginBottom: "3.5rem" }}>
+              {byBranch.length > 1 && (
+                <div style={{ textAlign: "center", marginBottom: "2rem" }}>
+                  <h3
+                    style={{
+                      fontFamily: "Cormorant Garamond, serif",
+                      fontSize: "2rem",
+                      color: BRANCH_INFO[branch].color,
+                      marginBottom: "0.4rem",
+                    }}
+                  >
+                    {BRANCH_INFO[branch].icon} {BRANCH_INFO[branch].name}
+                  </h3>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "60px",
+                      height: "2px",
+                      background: BRANCH_INFO[branch].color,
+                      opacity: 0.4,
+                    }}
+                  />
+                </div>
+              )}
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+                  gap: "1.8rem",
+                }}
+              >
+                {branchGroups.map((group) => (
+                  <ServiceCard
+                    key={group.service.id}
+                    group={group}
+                    all={services}
+                    onBook={handleBookClick}
+                  />
+                ))}
+              </div>
+            </section>
+          ))
         )}
       </div>
 
@@ -279,15 +317,25 @@ export default function ServicesPage() {
   );
 }
 
+/** ٥٠٠ جنيه — the site quotes whole pounds, never a decimal. */
+function money(n: number) {
+  return `${Math.round(n).toLocaleString("ar-EG")} جنيه`;
+}
+
 function ServiceCard({
   group,
+  all,
   onBook,
 }: {
   group: ServiceGroup;
+  all: Service[];
   onBook: (g: ServiceGroup) => void;
 }) {
   const { service, options } = group;
   const [hovered, setHovered] = useState(false);
+  // One number when the whole card costs the same, a span when the types inside
+  // it are priced apart.
+  const range = priceRange(group, all);
 
   return (
     <div
@@ -368,22 +416,34 @@ function ServiceCard({
           >
             الأنواع المتاحة
           </p>
-          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            {options.map((o) => (
-              <span
-                key={o.id}
-                style={{
-                  padding: "0.3rem 0.7rem",
-                  background: "rgba(255,255,255,0.6)",
-                  border: "1px solid rgba(196,135,106,0.28)",
-                  borderRadius: "50px",
-                  fontSize: "0.8rem",
-                  color: C.textMid,
-                }}
-              >
-                {o.name}
-              </span>
-            ))}
+          {/* Each type carries the price she'll pay for it, so the choice in
+              the modal is never a choice between two unknown numbers. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+            {options.map((o) => {
+              const p = fixedPrice(o, all);
+              return (
+                <div
+                  key={o.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "0.75rem",
+                    padding: "0.4rem 0.8rem",
+                    background: "rgba(255,255,255,0.6)",
+                    border: "1px solid rgba(196,135,106,0.28)",
+                    borderRadius: "50px",
+                    fontSize: "0.82rem",
+                    color: C.textMid,
+                  }}
+                >
+                  <span>{o.name}</span>
+                  <span style={{ color: C.deepRose, fontWeight: 700 }}>
+                    {p > 0 ? money(p) : "حسب الجلسة"}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -415,8 +475,8 @@ function ServiceCard({
             ⏱ {service.duration_minutes} دقيقة
           </span>
         )}
-        {/* The price sits on the service and covers every type inside it. */}
-        {service.price != null && (
+        {/* The figure she books against — a span when the types differ. */}
+        {range && (
           <span
             style={{
               display: "inline-flex",
@@ -431,7 +491,28 @@ function ServiceCard({
               fontWeight: 600,
             }}
           >
-            💰 {service.price} جنيه
+            💰{" "}
+            {range.min === range.max
+              ? money(range.min)
+              : `من ${money(range.min)} لـ ${money(range.max)}`}
+          </span>
+        )}
+        {!range && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.3rem",
+              padding: "0.3rem 0.75rem",
+              background: "rgba(255,255,255,0.55)",
+              border: "1px solid rgba(196,135,106,0.28)",
+              borderRadius: "50px",
+              fontSize: "0.8rem",
+              color: C.textLight,
+              fontWeight: 500,
+            }}
+          >
+            💬 السعر بيتحدد بعد الكشف
           </span>
         )}
       </div>

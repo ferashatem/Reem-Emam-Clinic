@@ -56,6 +56,11 @@ export function minutesOf(
  * them, so a half-hour session leaves the other half open to someone whose
  * session is short enough to fit in it.
  *
+ * `reservations` must already be narrowed to a single line — pass it through
+ * `reservationsOfBranch` first. The laser room and the كشف room run side by
+ * side, so an hour full in one is untouched in the other; counting both
+ * together would turn two free rooms into none.
+ *
  * `minutesFor` supplies the length for a booking that never stored one — pass
  * it wherever the services are on hand, so an old booking takes what its
  * service actually runs to instead of blocking the whole hour.
@@ -92,7 +97,7 @@ export function freeMinutes(used: number): number {
 /**
  * Who's in each hour on `date`, for the desk's own view. A cancelled booking
  * frees its slot; `exceptId` keeps a booking from colliding with itself while
- * being edited.
+ * being edited. Like `slotUsage`, this expects one line's bookings only.
  */
 export function takenSlots(
   reservations: Reservation[],

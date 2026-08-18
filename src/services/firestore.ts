@@ -6,8 +6,9 @@ import type { DocumentData, QueryConstraint } from 'firebase/firestore'
 import { auth, db } from './firebase'
 import { holdSlot, syncBusySlots } from './availability'
 import { monthKey, toNumber, todayISO } from '../utils/formatters'
+import { asBranch, branchOfReservation } from '../utils/branches'
 import type {
-  Client, Expense, MonthlyClosing, Payment, Reservation,
+  Branch, Client, Expense, MonthlyClosing, Payment, Reservation,
   SessionReport, Service, TeamMember,
 } from '../types'
 
@@ -192,59 +193,12 @@ export async function softDeleteClient(id: string) {
 
 // ─── Reservations ────────────────────────────────────────────────────────────
 
-/**
- * Bookings, narrowed **on the server**.
- *
- * `date`, `month` and `from`/`to` all become real query constraints, so a screen
- * that wants one day downloads one day. Reading the whole collection and
- * filtering here is what the bill is actually made of: every screen paid for
- * every booking the clinic had ever taken, and the price grew with the archive.
- *
- * Only `date` is constrained server-side at a time (a single range on one field
- * needs no composite index). `adminId` and `status` still filter here — by then
- * the set is already small.
- */
-export interface ReservationFilters {
-  adminId?: string
-  date?: string
-  month?: string
-  status?: string
-  /** Inclusive 'YYYY-MM-DD' bounds. `from` alone means "from then on". */
-  from?: string
-  to?: string
-  /**
-   * Only what still owes money, however old it is. Money outstanding must
-   * never fall off the end of a date window — a debt from last spring is
-   * still a debt — and the set stays small on its own, because a clinic that
-   * collects its money has few of these.
-   */
-  unsettled?: boolean
-}
+export async function getReservations(
+  filters?: { adminId?: string; date?: string; month?: string; status?: string }
+): Promise<Reservation[]> {
+  const snap = await getDocs(collection(db, 'reservations'))
+  let results = live<Reservation>(snap.docs).sort(byDateDesc)
 
-/** The server-side half of a filter, shared by the read and the listener. */
-function reservationQuery(filters?: ReservationFilters) {
-  const clauses: QueryConstraint[] = []
-
-  if (filters?.unsettled) {
-    clauses.push(where('payment_status', 'in', ['unpaid', 'partial']))
-  } else if (filters?.date) {
-    clauses.push(where('date', '==', filters.date))
-  } else if (filters?.month) {
-    clauses.push(where('date', '>=', `${filters.month}-01`))
-    clauses.push(where('date', '<=', `${filters.month}-31`))
-  } else {
-    if (filters?.from) clauses.push(where('date', '>=', filters.from))
-    if (filters?.to) clauses.push(where('date', '<=', filters.to))
-  }
-
-  return clauses.length
-    ? query(collection(db, 'reservations'), ...clauses)
-    : query(collection(db, 'reservations'))
-}
-
-/** The client-side half — fields a single-field index can't cover for free. */
-function narrowReservations(rows: Reservation[], filters?: ReservationFilters) {
-  let results = rows
   if (filters?.adminId) results = results.filter(r => r.admin_id === filters.adminId)
   if (filters?.status) results = results.filter(r => r.status === filters.status)
   return results
@@ -318,7 +272,10 @@ export async function createReservation(data: DocumentData) {
       await holdSlot(
         String(data.date ?? ''),
         String(data.time ?? ''),
-        data.duration_minutes as number | null | undefined
+        data.duration_minutes as number | null | undefined,
+        // Her hour is claimed in the room she booked — the other line's day
+        // must not move because of a booking that isn't in it.
+        asBranch(data.branch)
       )
     } catch { /* the request is in — the desk's next write fixes the mirror */ }
   }
@@ -410,15 +367,7 @@ export async function updateReview(id: string, data: Partial<DocumentData>) {
 
 /** Collections, narrowed on the server for the same reason as the bookings. */
 export async function getPayments(
-  filters?: {
-    staffId?: string
-    date?: string
-    month?: string
-    clientId?: string
-    /** Inclusive 'YYYY-MM-DD' bounds. */
-    from?: string
-    to?: string
-  }
+  filters?: { staffId?: string; date?: string; month?: string; clientId?: string }
 ): Promise<Payment[]> {
   const clauses: QueryConstraint[] = []
 
@@ -433,6 +382,10 @@ export async function getPayments(
     clauses.length ? query(collection(db, 'payments'), ...clauses) : collection(db, 'payments')
   )
   let results = live<Payment>(snap.docs).sort(bySeconds('created_at'))
+  if (filters?.branch) {
+    const branch = filters.branch
+    results = results.filter(p => asBranch(p.branch) === branch)
+  }
   if (filters?.staffId) results = results.filter(p => p.staff_id === filters.staffId)
   // `month` predates the `date` index, so it stays a local filter
   if (filters?.month) results = results.filter(p => monthOf(p) === filters.month)
@@ -464,12 +417,17 @@ export async function createPayment(data: DocumentData) {
 
   await runTransaction(db, async (tx) => {
     let reservationUpdate: { ref: ReturnType<typeof doc>; paid: number; total: number } | null = null
+    // The books are kept per line, so the money has to land in the same one
+    // that sold the session. Read off the booking rather than trusted from the
+    // caller — the screen collecting it may be showing both lines at once.
+    let branch = asBranch(data.branch)
 
     if (reservationId) {
       const resRef = doc(db, 'reservations', reservationId)
       const resSnap = await tx.get(resRef)
       if (resSnap.exists()) {
         const res = resSnap.data() as Reservation
+        branch = branchOfReservation(res)
         reservationUpdate = {
           ref: resRef,
           paid: toNumber(res.paid_amount) + amount,
@@ -480,6 +438,7 @@ export async function createPayment(data: DocumentData) {
 
     tx.set(paymentRef, {
       ...data,
+      branch,
       amount,
       date,
       month: monthKey(date),
@@ -574,9 +533,15 @@ export function paymentStatusFor(paid: number, total: number): 'unpaid' | 'parti
 
 // ─── Expenses (المصاريف) ─────────────────────────────────────────────────────
 
-export async function getExpenses(filters?: { month?: string }): Promise<Expense[]> {
+export async function getExpenses(
+  filters?: { month?: string; branch?: Branch }
+): Promise<Expense[]> {
   const snap = await getDocs(collection(db, 'expenses'))
   let results = live<Expense>(snap.docs).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''))
+  if (filters?.branch) {
+    const branch = filters.branch
+    results = results.filter(e => asBranch(e.branch) === branch)
+  }
   if (filters?.month) results = results.filter(e => monthOf(e) === filters.month)
   return results
 }
@@ -612,16 +577,33 @@ export async function getMonthlyClosings(): Promise<MonthlyClosing[]> {
     .sort((a, b) => (b.month ?? '').localeCompare(a.month ?? ''))
 }
 
-export async function getMonthlyClosing(month: string): Promise<MonthlyClosing | null> {
-  const snap = await getDoc(doc(db, 'monthly_closings', month))
+/**
+ * Where a month's closing lives. Each line signs off its own جرد, so the month
+ * alone is no longer unique. The laser centre keeps the bare month it always
+ * used, so the closings already signed stay exactly where they are.
+ */
+export function closingId(month: string, branch: Branch): string {
+  return branch === 'laser' ? month : `${month}_${branch}`
+}
+
+export async function getMonthlyClosing(
+  month: string,
+  branch: Branch = 'laser'
+): Promise<MonthlyClosing | null> {
+  const snap = await getDoc(doc(db, 'monthly_closings', closingId(month, branch)))
   return snap.exists() ? ({ id: snap.id, ...snap.data() } as MonthlyClosing) : null
 }
 
-/** Document ID is the month itself, so closing twice overwrites rather than duplicates. */
-export async function saveMonthlyClosing(month: string, data: DocumentData) {
-  return setDoc(doc(db, 'monthly_closings', month), {
+/** Keyed by month + line, so closing twice overwrites rather than duplicates. */
+export async function saveMonthlyClosing(
+  month: string,
+  branch: Branch,
+  data: DocumentData
+) {
+  return setDoc(doc(db, 'monthly_closings', closingId(month, branch)), {
     ...data,
     month,
+    branch,
     closed_at: now(),
   })
 }

@@ -18,6 +18,16 @@ export interface TeamMember {
   deleted_at?: Timestamp | null
 }
 
+/**
+ * The two lines the place runs: the laser centre, and the consultation clinic
+ * («كشف») next to it. They sit in different rooms and keep different books, so
+ * an hour spoken for in one says nothing about the same hour in the other.
+ *
+ * Everything written before the clinic existed is laser work, which is why
+ * absent always reads as `laser` — see `asBranch` in `utils/branches.ts`.
+ */
+export type Branch = 'laser' | 'consult'
+
 export type ReservationStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled'
 export type PaymentStatus = 'unpaid' | 'partial' | 'paid'
 export type PaymentMethod = 'cash' | 'instapay' | 'wallet' | 'card'
@@ -43,6 +53,12 @@ export interface Service {
   id: string
   name: string
   /**
+   * Which line sells this. Only a main service carries one — a variant is
+   * always in the same room as the service above it, so it inherits rather
+   * than storing its own. Absent = `laser`.
+   */
+  branch?: Branch
+  /**
    * Set when this doc is a variant *inside* another service — the device under
    * «ليزر», the area under «شعر». Null/absent = a main service the client picks
    * first. A main service that has variants is never booked directly.
@@ -64,6 +80,13 @@ export interface Service {
 
 export interface Reservation {
   id: string
+  /**
+   * The line this booking belongs to, snapshotted from its service the same
+   * way `service_name` is. It's what keeps the two schedules apart, so it has
+   * to be readable without looking the service up again — and it has to stay
+   * put even if the service is later moved to the other line.
+   */
+  branch?: Branch
   client_id: string
   client_name?: string
   client_phone?: string
@@ -98,6 +121,8 @@ export interface Reservation {
 
 export interface Payment {
   id: string
+  /** Which line's books this money lands in. Absent = `laser`. */
+  branch?: Branch
   client_id: string
   client_name?: string
   reservation_id?: string | null
@@ -114,6 +139,12 @@ export interface Payment {
 
 export interface Expense {
   id: string
+  /**
+   * Which line pays this bill. The books are separate, so a shared cost (rent
+   * on one floor, a shared receptionist) has to be entered once per line for
+   * the share each one carries — there is no "both" on purpose.
+   */
+  branch?: Branch
   title: string
   category: ExpenseCategory
   amount: number
@@ -133,7 +164,9 @@ export interface PartnerShare {
 
 /** Locked snapshot of a month's numbers — the "جرد" the partners sign off on. */
 export interface MonthlyClosing {
-  id: string      // = month, YYYY-MM
+  /** `{YYYY-MM}_{branch}` — each line closes its own month independently. */
+  id: string
+  branch?: Branch
   month: string
   total_revenue: number
   total_expenses: number

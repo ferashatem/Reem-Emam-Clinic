@@ -20,9 +20,30 @@ import {
   formatDateShort, formatMoney, formatMonthAr, monthKey, recentMonths, toNumber, todayISO,
 } from '../../utils/formatters'
 import { C } from '../../theme'
-import type { Expense, ExpenseCategory, MonthlyClosing } from '../../types'
+import {
+  BRANCHES, BRANCH_INFO, DEFAULT_BRANCH, asBranch, branchOfReservation,
+} from '../../utils/branches'
+import type { Branch, Expense, ExpenseCategory, MonthlyClosing } from '../../types'
 
 const DEFAULT_PARTNERS = ['ريم', 'رانيا']
+
+/**
+ * Whose partners a line's profit is split between. The two lines keep separate
+ * books, so they may not be owned in the same shares — `settings/clinic` holds
+ * a list per line, and falls back to the pair who have always run the laser
+ * centre when a line has never been configured.
+ */
+function partnersFor(settings: Record<string, unknown> | null, branch: Branch): string[] {
+  const perBranch = settings?.partners_by_branch as Record<string, unknown> | undefined
+  const own = perBranch?.[branch]
+  if (Array.isArray(own) && own.length > 0) return own as string[]
+  // The old single list is the laser centre's — it predates the split.
+  const legacy = settings?.partners
+  if (branch === DEFAULT_BRANCH && Array.isArray(legacy) && legacy.length > 0) {
+    return legacy as string[]
+  }
+  return DEFAULT_PARTNERS
+}
 
 const categories: { value: ExpenseCategory; label: string; icon: string }[] = [
   { value: 'electricity', label: 'كهربا', icon: '💡' },
@@ -58,6 +79,12 @@ export default function Accounting() {
 
   const [month, setMonth] = useState(monthKey())
   const [tab, setTab] = useState<'overview' | 'expenses' | 'closings'>('overview')
+  /**
+   * Which line's books are open. There is deliberately no "both" here: the two
+   * lines are closed off and split between their own partners separately, so a
+   * combined net profit is a number nobody would ever act on.
+   */
+  const [branch, setBranch] = useState<Branch>(DEFAULT_BRANCH)
 
   // Every figure below belongs to the month on screen, so only that month is
   // fetched — and switching months re-fetches instead of holding the archive
@@ -71,16 +98,24 @@ export default function Accounting() {
       ? (settings.partners as string[])
       : DEFAULT_PARTNERS
     return { payments, expenses, reservations, closings, partners }
-  }, [month])
+  }, [])
 
-  const partners = data?.partners ?? DEFAULT_PARTNERS
+  const partners = useMemo(
+    () => partnersFor(data?.settings ?? null, branch),
+    [data, branch]
+  )
 
   // ─── The month's numbers ──────────────────────────────────────────────────
   const book = useMemo(() => {
-    const payments = (data?.payments ?? []).filter(p => monthOf(p) === month)
-    const expenses = (data?.expenses ?? []).filter(e => monthOf(e) === month)
+    // Every figure below is one line's alone — money in, money out, and the
+    // sessions behind it. Mixing them would be mixing two sets of owners.
+    const payments = (data?.payments ?? [])
+      .filter(p => asBranch(p.branch) === branch && monthOf(p) === month)
+    const expenses = (data?.expenses ?? [])
+      .filter(e => asBranch(e.branch) === branch && monthOf(e) === month)
     const sessions = (data?.reservations ?? []).filter(
-      r => (r.date ?? '').startsWith(month) && r.status !== 'cancelled'
+      r => branchOfReservation(r) === branch &&
+        (r.date ?? '').startsWith(month) && r.status !== 'cancelled'
     )
 
     const revenue = payments.reduce((s, p) => s + toNumber(p.amount), 0)
@@ -117,11 +152,19 @@ export default function Accounting() {
       billed, outstanding: Math.max(0, billed - revenue),
       byCategory, byMethod, share, biggest, recurring,
     }
-  }, [data, month, partners])
+  }, [data, month, partners, branch])
 
   const closing = useMemo(
-    () => (data?.closings ?? []).find(c => c.month === month) ?? null,
-    [data, month]
+    () => (data?.closings ?? []).find(
+      c => c.month === month && asBranch(c.branch) === branch
+    ) ?? null,
+    [data, month, branch]
+  )
+
+  /** This line's closings only — the جرد tab lists one book at a time. */
+  const branchClosings = useMemo(
+    () => (data?.closings ?? []).filter(c => asBranch(c.branch) === branch),
+    [data, branch]
   )
 
   /** Recent months plus any older month that actually has data to look at. */
@@ -163,6 +206,10 @@ export default function Accounting() {
         amount: toNumber(values.amount),
         date: values.date,
         note: values.note?.trim() ?? '',
+        // Lands in whichever book is open. A cost the two lines share has to
+        // be entered once in each for the share it carries — there's no way to
+        // split one expense across two sets of partners after the fact.
+        branch,
       }
       if (editTarget) {
         await updateExpense(editTarget.id, payload)
@@ -208,15 +255,15 @@ export default function Accounting() {
     const ok = await confirm({
       title: closing ? 'إعادة الجرد' : 'إقفال الشهر',
       message: closing
-        ? `الجرد المحفوظ لشهر ${formatMonthAr(month)} هيتحدّث بالأرقام الحالية.`
-        : `هيتسجل جرد لشهر ${formatMonthAr(month)} بصافي ربح ${formatMoney(book.netProfit)}، ونصيب كل شريكة ${formatMoney(book.share)}.`,
+        ? `جرد ${BRANCH_INFO[branch].name} لشهر ${formatMonthAr(month)} هيتحدّث بالأرقام الحالية.`
+        : `هيتسجل جرد ${BRANCH_INFO[branch].name} لشهر ${formatMonthAr(month)} بصافي ربح ${formatMoney(book.netProfit)}، ونصيب كل شريكة ${formatMoney(book.share)}. الخط التاني بيتقفل لوحده.`,
       confirmLabel: closing ? 'تحديث الجرد' : 'إقفال الشهر',
     })
     if (!ok) return
 
     setClosingBusy(true)
     try {
-      await saveMonthlyClosing(month, {
+      await saveMonthlyClosing(month, branch, {
         total_revenue: book.revenue,
         total_expenses: book.totalExpenses,
         net_profit: book.netProfit,
@@ -241,7 +288,7 @@ export default function Accounting() {
     <div>
       <PageHeader
         title="الحسابات والجرد الشهري"
-        subtitle="التحصيلات والمصاريف وصافي الربح بين الشريكتين"
+        subtitle={`${BRANCH_INFO[branch].name} — التحصيلات والمصاريف وصافي الربح بين الشريكتين`}
         action={
           <Select
             value={month}
@@ -255,6 +302,24 @@ export default function Accounting() {
           </Select>
         }
       />
+
+      {/* Two books, never added together — the switcher is the whole page's
+          scope, not a filter on one card of it. */}
+      <div className="flex gap-2 p-1 rounded-xl mb-5" style={{ backgroundColor: C.bg }}>
+        {BRANCHES.map(b => (
+          <button
+            key={b}
+            type="button"
+            onClick={() => setBranch(b)}
+            className="flex-1 py-2.5 rounded-lg text-sm font-semibold transition-colors"
+            style={branch === b
+              ? { backgroundColor: BRANCH_INFO[b].color, color: '#fff' }
+              : { color: C.text }}
+          >
+            {BRANCH_INFO[b].icon} {BRANCH_INFO[b].name}
+          </button>
+        ))}
+      </div>
 
       {loading ? (
         <LoadingBlock />
@@ -487,7 +552,7 @@ export default function Accounting() {
           )}
 
           {/* ─── Saved closings ───────────────────────────────────────────── */}
-          {tab === 'closings' && <ClosingsList closings={data?.closings ?? []} onPick={setMonth} />}
+          {tab === 'closings' && <ClosingsList closings={branchClosings} onPick={setMonth} />}
         </>
       )}
 

@@ -18,30 +18,31 @@ import VisibilityRounded from '@mui/icons-material/VisibilityRounded'
 import DeleteOutlineRounded from '@mui/icons-material/DeleteOutlineRounded'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
 import { formatMoney, toNumber } from '../../utils/formatters'
-import { groupServices, sessionMinutes } from '../../utils/services'
+import { groupServices, sessionMinutes, fixedPrice } from '../../utils/services'
+import { BRANCHES, BRANCH_INFO, DEFAULT_BRANCH, branchOf } from '../../utils/branches'
 import { SLOT_MINUTES } from '../../utils/slots'
 import { C } from '../../theme'
-import type { Service } from '../../types'
+import type { Branch, Service } from '../../types'
 
 interface ServiceForm {
   name: string
   description: string
   duration_minutes: string
-  price: string
 }
 
 /** The lengths a session actually runs to — an hour holds 60 minutes of them. */
 const durationChoices = [15, 20, 30, 45, 60]
 
 /**
- * What one session of this service costs. It's what the closing sheet opens the
- * total on; a service with none set is priced by hand when its session ends.
+ * What a service costs, when it has a stored price at all. Prices aren't typed
+ * here any more — the session's total is agreed and entered when it's closed —
+ * so this only reports what older services still carry.
  */
 function priceOf(s: Service) {
-  const price = toNumber(s.price)
-  return price > 0
-    ? { value: formatMoney(price), priced: true }
-    : { value: '', priced: false }
+  const perPulse = toNumber(s.price_per_pulse)
+  if (perPulse > 0) return { value: formatMoney(perPulse), note: 'للنبضة الواحدة', perPulse, priced: true }
+  if (toNumber(s.price) > 0) return { value: formatMoney(s.price), note: 'سعر ثابت', perPulse: 0, priced: true }
+  return { value: '', note: '', perPulse: 0, priced: false }
 }
 
 /** How many of these sessions the clinic can stack inside one hour. */
@@ -56,6 +57,14 @@ export default function Services() {
   const services = data ?? []
   const groups = groupServices(services)
   const optionCount = services.length - groups.length
+  /** The catalogue split the way the place is: one list per line. */
+  const byBranch = BRANCHES
+    .map(branch => ({
+      branch,
+      groups: groups.filter(g => branchOf(g.service, services) === branch),
+    }))
+    // A line with nothing in it yet stays off the screen until it has a service.
+    .filter(b => b.groups.length > 0)
   const { confirm, dialog } = useConfirm()
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -65,8 +74,9 @@ export default function Services() {
   const [saving, setSaving] = useState(false)
   const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<ServiceForm>()
   const watchedDuration = watch('duration_minutes')
+  const watchedBranch = watch('branch')
 
-  const blank: ServiceForm = { name: '', description: '', duration_minutes: '', price: '' }
+  const blank: ServiceForm = { name: '', description: '', duration_minutes: '' }
 
   function openCreate() {
     setEditTarget(null)
@@ -79,7 +89,8 @@ export default function Services() {
   function openAddOption(main: Service) {
     setEditTarget(null)
     setParent(main)
-    reset(blank)
+    // A type is in the same room as its service — it never picks a line.
+    reset({ ...blank, branch: branchOf(main, services) })
     setModalOpen(true)
   }
 
@@ -90,7 +101,6 @@ export default function Services() {
       name: s.name ?? '',
       description: s.description ?? '',
       duration_minutes: toNumber(s.duration_minutes) > 0 ? String(s.duration_minutes) : '',
-      price: toNumber(s.price) > 0 ? String(toNumber(s.price)) : '',
     })
     setModalOpen(true)
   }
@@ -98,6 +108,9 @@ export default function Services() {
   async function onSubmit(values: ServiceForm) {
     setSaving(true)
     try {
+      // Names and a session length. Editing leaves whatever price an older
+      // service still carries untouched — it's what the session sheet uses to
+      // work the total out — while anything new starts without one.
       const payload: Record<string, unknown> = {
         name: values.name.trim(),
         parent_id: parent?.id ?? null,
@@ -105,9 +118,10 @@ export default function Services() {
         // 0 = a type falling back to its service's length, or an hour for a
         // service that never got one.
         duration_minutes: Math.min(toNumber(values.duration_minutes), SLOT_MINUTES),
-        // The rate sits on the service, never on a type inside it — a type is
-        // a choice of *what* is used, not of what it costs.
-        price: parent ? null : (values.price.trim() ? toNumber(values.price) : null),
+      }
+      if (!editTarget) {
+        payload.price = null
+        payload.price_per_pulse = null
       }
       if (editTarget) {
         await updateService(editTarget.id, payload)
@@ -277,27 +291,118 @@ export default function Services() {
 
       {error ? (
         <ErrorState message={error} onRetry={reload} />
+      ) : groups.length === 0 ? (
+        <EmptyState icon="✨" title="مفيش خدمات لسه" description="ضيفي أول خدمة عشان تظهر في الحجز وفي الموقع" action={addButton} />
       ) : (
-        <DataTable
-          columns={columns}
-          rows={rows}
-          getRowId={r => r.service.id}
-          loading={loading}
-          paginated={false}
-          rowSx={r => ({
-            ...(r.service.is_active ? null : { opacity: 0.6 }),
-            // A type belongs to the service above it, so it sits back from it
-            ...(r.parent ? { backgroundColor: 'rgba(139,58,82,0.02)' } : null),
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {groups.map(({ service: s, options }) => {
+            const price = priceOf(s)
+            return (
+              <div key={s.id} className="bg-white rounded-2xl p-5 shadow-sm border flex flex-col" style={{ borderColor: C.primarySoft }}>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <h3 className="font-semibold text-base" style={{ color: C.text }}>{s.name}</h3>
+                  <span className={`text-xs px-2 py-1 rounded-full shrink-0 ${s.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {s.is_active ? 'مفعّلة' : 'مخفية'}
+                  </span>
+                </div>
+
+                {/* The length decides how many clients share an hour — it belongs
+                    next to the name, not buried in the form. */}
+                <p className="text-xs mb-3 tabular-nums" style={{ color: C.primary }}>
+                  ⏱ {sessionMinutes(s, services)} دقيقة · {perHour(s)}
+                </p>
+
+                {s.description && <p className="text-sm text-gray-500 mb-4 line-clamp-2">{s.description}</p>}
+
+                <div className="mt-auto" />
+
+                {/* Only services from before the prices came out of this screen
+                    still have one; the rest are priced when the session ends. */}
+                <div
+                  className="rounded-xl px-3 py-2 mb-4 text-xs tabular-nums"
+                  style={{ backgroundColor: C.bg, color: price.priced ? C.primary : '#9CA3AF' }}
+                >
+                  {price.priced
+                    ? `${price.value} · ${price.note}${price.perPulse > 0 ? ` — مثال: ٥٠٠ نبضة = ${formatMoney(price.perPulse * 500)}` : ''}`
+                    : 'السعر بيتحدد وقت إنهاء الجلسة'}
+                </div>
+
+                {/* The types are a choice of what gets used, not of what it
+                    costs — so they're names, and the price above covers them. */}
+                {options.length > 0 && (
+                  <div className="mb-4">
+                    <p className="text-xs mb-2" style={{ color: C.primary }}>
+                      الأنواع اللي جواها ({options.length})
+                    </p>
+                    <div className="space-y-2">
+                      {options.map(o => (
+                        <div
+                          key={o.id}
+                          className="flex items-center justify-between gap-2 rounded-xl px-3 py-2"
+                          style={{ backgroundColor: C.bg }}
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold truncate" style={{ color: C.text }}>{o.name}</p>
+                            <p className="text-xs text-gray-400 truncate tabular-nums">
+                              {sessionMinutes(o, services)} دقيقة
+                              {o.description ? ` · ${o.description}` : ''}
+                            </p>
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => openEdit(o)}
+                              className="text-xs px-2 py-1 rounded-lg"
+                              style={{ color: C.primary }}
+                            >
+                              تعديل
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(o, [])}
+                              className="text-xs px-2 py-1 rounded-lg"
+                              style={{ color: C.red }}
+                            >
+                              مسح
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <Button
+                  size="sm" variant="outline" className="w-full mb-2"
+                  onClick={() => openAddOption(s)}
+                  style={{ borderColor: C.primarySoft, color: C.primary }}
+                >
+                  + إضافة نوع جوه {s.name}
+                </Button>
+
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" className="flex-1" onClick={() => openEdit(s)}>تعديل</Button>
+                  <Button
+                    size="sm" variant="outline" className="flex-1"
+                    onClick={() => handleToggleActive(s, options)}
+                    style={s.is_active
+                      ? { borderColor: '#FED7AA', color: '#C2410C' }
+                      : { borderColor: '#BBF7D0', color: '#15803D' }}
+                  >
+                    {s.is_active ? 'إخفاء' : 'تفعيل'}
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => handleDelete(s, options)}
+                    style={{ borderColor: '#FECACA', color: C.red }}
+                  >
+                    مسح
+                  </Button>
+                </div>
+              </div>
+            )
           })}
-          empty={
-            <EmptyState
-              icon="✨"
-              title="مفيش خدمات لسه"
-              description="ضيفي أول خدمة عشان تظهر في الحجز وفي الموقع"
-              action={addButton}
-            />
-          }
-        />
+        </div>
       )}
 
       <Modal
@@ -310,10 +415,41 @@ export default function Services() {
         }
       >
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-          {parent && (
+          {parent ? (
             <p className="text-xs rounded-xl px-3 py-2" style={{ backgroundColor: C.bg, color: C.primary }}>
               العميلة هتختار «{parent.name}» الأول، وبعدين تختار النوع ده.
+              {' '}النوع بيتحجز في {BRANCH_INFO[branchOf(parent, services)].name} زي الخدمة اللي فوقه.
             </p>
+          ) : (
+            /* The line decides which room's hours this fills and which books
+               its money lands in — so it's the first question, not a detail. */
+            <Field label="بتتحجز فين؟" required>
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl" style={{ backgroundColor: C.bg }}>
+                {BRANCHES.map(b => {
+                  const info = BRANCH_INFO[b]
+                  const active = watchedBranch === b
+                  return (
+                    <button
+                      key={b}
+                      type="button"
+                      onClick={() => setValue('branch', b, { shouldDirty: true })}
+                      className="py-2.5 rounded-lg text-sm font-medium transition-colors"
+                      style={active
+                        ? { backgroundColor: info.color, color: '#fff' }
+                        : { color: C.text }}
+                    >
+                      {info.icon} {info.name}
+                    </button>
+                  )
+                })}
+              </div>
+              {editTarget && (
+                <p className="text-xs text-gray-400 mt-2">
+                  نقل الخدمة لخط تاني بيأثر على الحجوزات الجديدة بس — القديمة بتفضل
+                  في حسابات الخط اللي اتباعت فيه.
+                </p>
+              )}
+            </Field>
           )}
 
           <Field label={parent ? 'اسم النوع' : 'اسم الخدمة'} required error={errors.name?.message}>
@@ -328,26 +464,9 @@ export default function Services() {
             <Textarea {...register('description')} rows={2} placeholder="بيظهر للعملاء في الموقع" />
           </Field>
 
-          {/* The price lives on the service, not on the types inside it. It's
-              a default, not a commitment: the closing sheet opens on it and
-              whoever closes the session can still change the figure. */}
-          {!parent && (
-            <Field
-              label="سعر الجلسة (جنيه)"
-              error={errors.price?.message}
-              hint="بيظهر جاهز وقت إنهاء الجلسة — سيبيه فاضي لو السعر بيختلف كل مرة"
-            >
-              <Input
-                {...register('price', {
-                  validate: v => !v || toNumber(v) >= 0 || 'السعر مينفعش يكون بالسالب',
-                })}
-                invalid={!!errors.price}
-                type="number" inputMode="numeric" min={0} dir="ltr"
-                placeholder="مثال: 500"
-              />
-            </Field>
-          )}
-
+          {/* No price here: the session's total is agreed with the client and
+              written down when the session is closed. The length, though, is
+              what decides whether another client still fits in the same hour. */}
           <Field
             label="مدة الجلسة (دقيقة)"
             error={errors.duration_minutes?.message}
