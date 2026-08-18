@@ -35,7 +35,15 @@ export default function Hero() {
       <div className="hero__media">
         <div className="hero__slides">
           {[...galleryOrder, galleryOrder[0]].map((src, i) => (
-            <img key={i} src={src} alt="" fetchPriority={i === 0 ? 'high' : 'low'} />
+            <img
+              key={i}
+              src={src}
+              alt=""
+              // The first frame is the largest thing on screen and decides how
+              // fast the page reads as "loaded"; the rest can wait their turn.
+              fetchPriority={i === 0 ? 'high' : 'low'}
+              decoding={i === 0 ? 'sync' : 'async'}
+            />
           ))}
         </div>
       </div>
@@ -60,7 +68,8 @@ export default function Hero() {
         </div>
       </div>
 
-      <a href="#testimonials" className="hero__scroll" aria-label={h.scroll}>
+      {/* Points at #booking while the testimonials section is hidden. */}
+      <a href="#booking" className="hero__scroll" aria-label={h.scroll}>
         <span>{h.scroll}</span>
         <span className="track" />
       </a>

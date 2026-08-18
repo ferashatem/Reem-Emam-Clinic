@@ -143,9 +143,7 @@ export default function PublicBookingModal({ service, options = [], onClose }: P
         service_name: chosen
           ? (chosen.id === service?.id ? chosen.name : `${service?.name} — ${chosen.name}`)
           : null,
-        pulses: null,
-        price_per_pulse: null,
-        // Priced after the session, once the pulse count is known
+        // Priced after the session
         price_at_booking: 0,
         priced_at: null,
         paid_amount: 0,

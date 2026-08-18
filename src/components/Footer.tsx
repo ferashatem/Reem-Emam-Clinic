@@ -1,5 +1,5 @@
 import { useLang } from "../context/LangContext";
-import logo from "../assets/logo.png";
+import logo from "../assets/logo.webp";
 import {
   AtIcon,
   FacebookIcon,
@@ -34,7 +34,7 @@ export default function Footer() {
           </a>
           <div className="foot__socials">
             <a
-              href="https://facebook.com"
+              href="https://www.facebook.com/profile.php?id=61593237171100"
               target="_blank"
               rel="noreferrer"
               className="foot__s"
@@ -43,7 +43,7 @@ export default function Footer() {
               <FacebookIcon />
             </a>
             <a
-              href="https://instagram.com"
+              href="https://www.instagram.com/dr_reememam"
               target="_blank"
               rel="noreferrer"
               className="foot__s"
@@ -75,7 +75,7 @@ export default function Footer() {
               </a>
             </li>
             <li>
-              <a href="https://instagram.com" target="_blank" rel="noreferrer">
+              <a href={`mailto:${tr.booking.contacts.instagram.value}`}>
                 <span className="ico">
                   <AtIcon />
                 </span>
@@ -83,12 +83,14 @@ export default function Footer() {
               </a>
             </li>
             <li>
-              {/* the address is Arabic in both languages, so it carries its own dir */}
-              <span className="foot__contact" dir="rtl">
+              <span className="foot__contact foot__contact--address">
                 <span className="ico">
                   <MapPinIcon />
                 </span>
-                {tr.booking.contacts.location.value}
+                {/* The address is Arabic in both languages, so the text carries
+                    its own direction — the row keeps the page's, or the pin
+                    would swap sides and break rank with the rows above it. */}
+                <span dir="rtl">{tr.booking.contacts.location.value}</span>
               </span>
             </li>
           </ul>

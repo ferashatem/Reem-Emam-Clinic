@@ -1,8 +1,8 @@
 import {
-  collection, doc, getDoc, getDocs, addDoc, updateDoc, query,
-  where, Timestamp, setDoc, runTransaction,
+  collection, doc, getDoc, getDocs, getCountFromServer, addDoc, updateDoc, query,
+  where, onSnapshot, Timestamp, setDoc, runTransaction,
 } from 'firebase/firestore'
-import type { DocumentData } from 'firebase/firestore'
+import type { DocumentData, QueryConstraint } from 'firebase/firestore'
 import { auth, db } from './firebase'
 import { holdSlot, syncBusySlots } from './availability'
 import { monthKey, toNumber, todayISO } from '../utils/formatters'
@@ -67,9 +67,29 @@ export async function softDeleteAdmin(uid: string) {
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-export async function getServices(): Promise<Service[]> {
-  const snap = await getDocs(collection(db, 'services'))
-  return live<Service>(snap.docs).sort(bySeconds('created_at'))
+/**
+ * The catalogue, fetched once per session.
+ *
+ * Eight screens ask for it, several of them on every visit, and it changes
+ * about as often as the clinic buys a new machine. The in-flight promise is
+ * shared too, so two screens mounting together make one request rather than
+ * two. Any write below clears it, so an edit shows up immediately.
+ */
+let servicesCache: Promise<Service[]> | null = null
+
+export function invalidateServices() {
+  servicesCache = null
+}
+
+export function getServices(): Promise<Service[]> {
+  servicesCache ??= getDocs(collection(db, 'services'))
+    .then(snap => live<Service>(snap.docs).sort(bySeconds('created_at')))
+    .catch(err => {
+      // A failed fetch must not become the answer for the rest of the session
+      servicesCache = null
+      throw err
+    })
+  return servicesCache
 }
 
 export async function getActiveServices(): Promise<Service[]> {
@@ -78,6 +98,7 @@ export async function getActiveServices(): Promise<Service[]> {
 }
 
 export async function createService(data: DocumentData) {
+  invalidateServices()
   return addDoc(collection(db, 'services'), {
     // A variant («كانديلا» under «ليزر») carries its parent; a main service null.
     parent_id: data.parent_id ?? null,
@@ -89,6 +110,7 @@ export async function createService(data: DocumentData) {
 }
 
 export async function updateService(id: string, data: Partial<DocumentData>) {
+  invalidateServices()
   return updateDoc(doc(db, 'services', id), data)
 }
 
@@ -103,12 +125,14 @@ async function serviceOptionDocs(parentId: string) {
  * active under a hidden «ليزر» would otherwise stay bookable on its own.
  */
 export async function setServiceActive(id: string, isActive: boolean) {
+  invalidateServices()
   const options = await serviceOptionDocs(id)
   await Promise.all(options.map(d => updateDoc(d.ref, { is_active: isActive })))
   return updateDoc(doc(db, 'services', id), { is_active: isActive })
 }
 
 export async function softDeleteService(id: string) {
+  invalidateServices()
   const options = await serviceOptionDocs(id)
   await Promise.all(
     options.map(d => updateDoc(d.ref, { deleted_at: now(), is_active: false }))
@@ -121,6 +145,20 @@ export async function softDeleteService(id: string) {
 export async function getClients(): Promise<Client[]> {
   const snap = await getDocs(collection(db, 'clients'))
   return live<Client>(snap.docs).sort(bySeconds('created_at'))
+}
+
+/**
+ * How many patient files there are, counted **on the server**.
+ *
+ * Firestore bills an aggregation at one read per 1,000 documents, so a number
+ * that used to cost one read per patient on every dashboard load now costs
+ * one, and stops growing with the clinic.
+ */
+export async function getClientCount(): Promise<number> {
+  const snap = await getCountFromServer(
+    query(collection(db, 'clients'), where('deleted_at', '==', null))
+  )
+  return snap.data().count
 }
 
 export async function getClientById(id: string) {
@@ -154,18 +192,89 @@ export async function softDeleteClient(id: string) {
 
 // ─── Reservations ────────────────────────────────────────────────────────────
 
-export async function getReservations(
-  filters?: { adminId?: string; date?: string; month?: string; status?: string }
-): Promise<Reservation[]> {
-  const snap = await getDocs(collection(db, 'reservations'))
-  let results = live<Reservation>(snap.docs).sort(byDateDesc)
+/**
+ * Bookings, narrowed **on the server**.
+ *
+ * `date`, `month` and `from`/`to` all become real query constraints, so a screen
+ * that wants one day downloads one day. Reading the whole collection and
+ * filtering here is what the bill is actually made of: every screen paid for
+ * every booking the clinic had ever taken, and the price grew with the archive.
+ *
+ * Only `date` is constrained server-side at a time (a single range on one field
+ * needs no composite index). `adminId` and `status` still filter here — by then
+ * the set is already small.
+ */
+export interface ReservationFilters {
+  adminId?: string
+  date?: string
+  month?: string
+  status?: string
+  /** Inclusive 'YYYY-MM-DD' bounds. `from` alone means "from then on". */
+  from?: string
+  to?: string
+  /**
+   * Only what still owes money, however old it is. Money outstanding must
+   * never fall off the end of a date window — a debt from last spring is
+   * still a debt — and the set stays small on its own, because a clinic that
+   * collects its money has few of these.
+   */
+  unsettled?: boolean
+}
 
+/** The server-side half of a filter, shared by the read and the listener. */
+function reservationQuery(filters?: ReservationFilters) {
+  const clauses: QueryConstraint[] = []
+
+  if (filters?.unsettled) {
+    clauses.push(where('payment_status', 'in', ['unpaid', 'partial']))
+  } else if (filters?.date) {
+    clauses.push(where('date', '==', filters.date))
+  } else if (filters?.month) {
+    clauses.push(where('date', '>=', `${filters.month}-01`))
+    clauses.push(where('date', '<=', `${filters.month}-31`))
+  } else {
+    if (filters?.from) clauses.push(where('date', '>=', filters.from))
+    if (filters?.to) clauses.push(where('date', '<=', filters.to))
+  }
+
+  return clauses.length
+    ? query(collection(db, 'reservations'), ...clauses)
+    : query(collection(db, 'reservations'))
+}
+
+/** The client-side half — fields a single-field index can't cover for free. */
+function narrowReservations(rows: Reservation[], filters?: ReservationFilters) {
+  let results = rows
   if (filters?.adminId) results = results.filter(r => r.admin_id === filters.adminId)
-  if (filters?.date) results = results.filter(r => r.date === filters.date)
-  if (filters?.month) results = results.filter(r => (r.date ?? '').startsWith(filters.month!))
   if (filters?.status) results = results.filter(r => r.status === filters.status)
-
   return results
+}
+
+export async function getReservations(filters?: ReservationFilters): Promise<Reservation[]> {
+  const snap = await getDocs(reservationQuery(filters))
+  return narrowReservations(live<Reservation>(snap.docs).sort(byDateDesc), filters)
+}
+
+/**
+ * The same query, kept open.
+ *
+ * A screen that polls pays for every document again on every tick; a listener
+ * pays for the first load and then only for documents that actually change.
+ * It is also simply correct: the desk sees a session close the moment the
+ * doctor closes it, rather than up to half a minute later.
+ *
+ * Returns the unsubscribe function — call it when the screen goes away.
+ */
+export function watchReservations(
+  filters: ReservationFilters | undefined,
+  onData: (rows: Reservation[]) => void,
+  onError?: (err: Error) => void
+) {
+  return onSnapshot(
+    reservationQuery(filters),
+    snap => onData(narrowReservations(live<Reservation>(snap.docs).sort(byDateDesc), filters)),
+    err => onError?.(err)
+  )
 }
 
 export async function getReservationsByClient(clientId: string): Promise<Reservation[]> {
@@ -299,13 +408,33 @@ export async function updateReview(id: string, data: Partial<DocumentData>) {
 
 // ─── Payments / Collections (التحصيلات) ──────────────────────────────────────
 
+/** Collections, narrowed on the server for the same reason as the bookings. */
 export async function getPayments(
-  filters?: { staffId?: string; date?: string; month?: string; clientId?: string }
+  filters?: {
+    staffId?: string
+    date?: string
+    month?: string
+    clientId?: string
+    /** Inclusive 'YYYY-MM-DD' bounds. */
+    from?: string
+    to?: string
+  }
 ): Promise<Payment[]> {
-  const snap = await getDocs(collection(db, 'payments'))
+  const clauses: QueryConstraint[] = []
+
+  if (filters?.date) {
+    clauses.push(where('date', '==', filters.date))
+  } else if (filters?.from || filters?.to) {
+    if (filters.from) clauses.push(where('date', '>=', filters.from))
+    if (filters.to) clauses.push(where('date', '<=', filters.to))
+  }
+
+  const snap = await getDocs(
+    clauses.length ? query(collection(db, 'payments'), ...clauses) : collection(db, 'payments')
+  )
   let results = live<Payment>(snap.docs).sort(bySeconds('created_at'))
   if (filters?.staffId) results = results.filter(p => p.staff_id === filters.staffId)
-  if (filters?.date) results = results.filter(p => p.date === filters.date)
+  // `month` predates the `date` index, so it stays a local filter
   if (filters?.month) results = results.filter(p => monthOf(p) === filters.month)
   if (filters?.clientId) results = results.filter(p => p.client_id === filters.clientId)
   return results
@@ -371,10 +500,9 @@ export async function createPayment(data: DocumentData) {
 }
 
 /**
- * Prices a finished session — the doctor's half of closing it out. She is the
- * only one who knows how many pulses actually ran, so she records the count and
- * the total it comes to; the assistant collects that total at the desk
- * afterwards via `createPayment`.
+ * Prices a finished session and marks it done. Whoever is at the desk when the
+ * patient stands up records the agreed total; the money itself is taken against
+ * it via `createPayment`.
  *
  * Runs as a transaction because `payment_status` has to be re-derived against
  * the new total: a client who paid a deposit against an unpriced booking would
@@ -382,8 +510,7 @@ export async function createPayment(data: DocumentData) {
  */
 export async function closeSession(input: {
   reservationId: string
-  pulses: number | null
-  /** Final agreed total, after any discount the doctor applied. */
+  /** Final agreed total, after any discount. */
   total: number
 }) {
   const total = toNumber(input.total)
@@ -396,7 +523,6 @@ export async function closeSession(input: {
     const paid = toNumber((resSnap.data() as Reservation).paid_amount)
 
     tx.update(resRef, {
-      pulses: input.pulses,
       price_at_booking: total,
       priced_at: now(),
       status: 'completed',

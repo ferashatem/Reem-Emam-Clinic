@@ -59,15 +59,19 @@ export default function Accounting() {
   const [month, setMonth] = useState(monthKey())
   const [tab, setTab] = useState<'overview' | 'expenses' | 'closings'>('overview')
 
+  // Every figure below belongs to the month on screen, so only that month is
+  // fetched — and switching months re-fetches instead of holding the archive
+  // in memory. The closings collection already carries the older months.
   const { data, loading, error, reload } = useLoader(async () => {
     const [payments, expenses, reservations, closings, settings] = await Promise.all([
-      getPayments(), getExpenses(), getReservations(), getMonthlyClosings(), getClinicSettings(),
+      getPayments({ month }), getExpenses(), getReservations({ month }),
+      getMonthlyClosings(), getClinicSettings(),
     ])
     const partners = Array.isArray(settings?.partners) && settings.partners.length > 0
       ? (settings.partners as string[])
       : DEFAULT_PARTNERS
     return { payments, expenses, reservations, closings, partners }
-  }, [])
+  }, [month])
 
   const partners = data?.partners ?? DEFAULT_PARTNERS
 

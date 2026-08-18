@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { getAdmins, createAdmin, updateAdmin, softDeleteAdmin } from '../../services/firestore'
@@ -9,7 +9,16 @@ import { useConfirm } from '../../components/ui/ConfirmDialog'
 import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
-import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
+import { ErrorState } from '../../components/ui/Feedback'
+import DataTable, { type Column } from '../../components/ui/DataTable'
+import RowMenu, { type RowAction } from '../../components/ui/RowMenu'
+import Avatar from '@mui/material/Avatar'
+import Chip from '@mui/material/Chip'
+import Stack from '@mui/material/Stack'
+import EditRounded from '@mui/icons-material/EditRounded'
+import BlockRounded from '@mui/icons-material/BlockRounded'
+import CheckCircleOutlineRounded from '@mui/icons-material/CheckCircleOutlineRounded'
+import DeleteOutlineRounded from '@mui/icons-material/DeleteOutlineRounded'
 import { Field, Input, Select, Button } from '../../components/ui/Form'
 import { normalizePhone } from '../../utils/validators'
 import { C } from '../../theme'
@@ -177,87 +186,129 @@ export default function Admins() {
 
   const addButton = <Button className="w-full sm:w-auto" onClick={openCreate}>+ إضافة حساب</Button>
 
+  const columns = useMemo<Column<TeamMember>[]>(() => [
+    {
+      id: 'name',
+      label: 'الاسم',
+      sortValue: m => m.name ?? '',
+      render: m => {
+        const role = roleOf(m.role)
+        return (
+          <Stack direction="row" spacing={1.25} sx={{ alignItems: 'center' }}>
+            <Avatar sx={{ width: 36, height: 36, bgcolor: `${role.color}18`, color: role.color, fontWeight: 700, fontSize: '0.9rem' }}>
+              {(m.name ?? '؟').trim().charAt(0)}
+            </Avatar>
+            <div className="min-w-0">
+              <p className="font-semibold" style={{ color: C.text }}>
+                {m.name}
+                {isSelf(m) && <span className="text-xs text-gray-400 me-2">(انتي)</span>}
+              </p>
+              <p className="text-xs text-gray-400" dir="ltr">{loginIdOf(m)}</p>
+            </div>
+          </Stack>
+        )
+      },
+    },
+    {
+      id: 'role',
+      label: 'الصلاحية',
+      sortValue: m => roleOf(m.role).label,
+      width: 150,
+      render: m => {
+        const role = roleOf(m.role)
+        return (
+          <Chip
+            size="small"
+            label={role.label}
+            sx={{ bgcolor: `${role.color}15`, color: role.color }}
+          />
+        )
+      },
+    },
+    {
+      id: 'contact',
+      label: 'التليفون',
+      hideBelow: 'md',
+      width: 150,
+      render: m => <span className="text-gray-500 text-xs" dir="ltr">{m.phone || '—'}</span>,
+    },
+    {
+      id: 'hours',
+      label: 'مواعيد العمل',
+      hideBelow: 'lg',
+      render: m => <span className="text-gray-500 text-xs">{m.working_hours || '—'}</span>,
+    },
+    {
+      id: 'state',
+      label: 'الحالة',
+      sortValue: m => (m.is_active ? 0 : 1),
+      width: 110,
+      render: m => (
+        <Chip
+          size="small"
+          variant="outlined"
+          color={m.is_active ? 'success' : 'default'}
+          label={m.is_active ? 'نشط' : 'معطّل'}
+        />
+      ),
+    },
+    {
+      id: 'actions',
+      label: '',
+      align: 'left',
+      width: 60,
+      render: m => {
+        const self = isSelf(m)
+        const actions: RowAction[] = [
+          { label: 'تعديل', icon: <EditRounded fontSize="small" />, onClick: () => openEdit(m) },
+          {
+            label: m.is_active ? 'تعطيل الحساب' : 'تفعيل الحساب',
+            icon: m.is_active
+              ? <BlockRounded fontSize="small" />
+              : <CheckCircleOutlineRounded fontSize="small" />,
+            onClick: () => handleToggleActive(m),
+            // Locking yourself out is the one mistake nobody can undo from here
+            disabled: self,
+          },
+          {
+            label: 'مسح الحساب',
+            icon: <DeleteOutlineRounded fontSize="small" />,
+            onClick: () => handleDelete(m),
+            disabled: self,
+            danger: true,
+          },
+        ]
+        return <RowMenu actions={actions} disabled={busyId === m.id} />
+      },
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [busyId, userProfile])
+
   return (
-    <div>
+    <div className="h-full min-h-0 flex flex-col">
       <PageHeader title="الفريق" subtitle={`${team.length} حساب`} action={addButton} />
 
-      {loading ? (
-        <LoadingBlock />
-      ) : error ? (
+      {error ? (
         <ErrorState message={error} onRetry={reload} />
-      ) : team.length === 0 ? (
-        <EmptyState icon="👩‍💼" title="مفيش حسابات لسه" description="ضيفي أول حساب للفريق" action={addButton} />
       ) : (
-        <div className="space-y-3">
-          {team.map(m => {
-            const role = roleOf(m.role)
-            const self = isSelf(m)
-            return (
-              <div
-                key={m.id}
-                className="bg-white rounded-2xl p-4 border shadow-sm flex flex-col sm:flex-row sm:items-center gap-3"
-                style={{ borderColor: C.primarySoft }}
-              >
-                <div
-                  className="w-11 h-11 rounded-full flex items-center justify-center text-base font-bold shrink-0"
-                  style={{ backgroundColor: `${role.color}18`, color: role.color }}
-                >
-                  {(m.name ?? '؟').trim().charAt(0)}
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-semibold text-sm" style={{ color: C.text }}>{m.name}</p>
-                    <span
-                      className="text-xs px-2.5 py-0.5 rounded-full font-medium"
-                      style={{ backgroundColor: `${role.color}15`, color: role.color }}
-                    >
-                      {role.label}
-                    </span>
-                    {self && (
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">انتي</span>
-                    )}
-                    <span
-                      className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${
-                        m.is_active ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'
-                      }`}
-                    >
-                      {m.is_active ? 'نشط' : 'معطّل'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1" dir="ltr">
-                    {loginIdOf(m)}
-                    {m.phone ? ` · ${m.phone}` : ''}
-                    {m.working_hours ? ` · ${m.working_hours}` : ''}
-                  </p>
-                </div>
-
-                <div className="flex gap-2 shrink-0">
-                  <Button size="sm" variant="outline" onClick={() => openEdit(m)} disabled={busyId === m.id}>
-                    تعديل
-                  </Button>
-                  <Button
-                    size="sm" variant="outline"
-                    onClick={() => handleToggleActive(m)}
-                    disabled={busyId === m.id || self}
-                    style={m.is_active
-                      ? { borderColor: '#FED7AA', color: '#C2410C' }
-                      : { borderColor: '#BBF7D0', color: '#15803D' }}
-                  >
-                    {m.is_active ? 'تعطيل' : 'تفعيل'}
-                  </Button>
-                  <Button
-                    size="sm" variant="outline"
-                    onClick={() => handleDelete(m)}
-                    disabled={busyId === m.id || self}
-                    style={{ borderColor: '#FECACA', color: C.red }}
-                  >
-                    مسح
-                  </Button>
-                </div>
-              </div>
-            )
-          })}
+        <div className="flex-1 min-h-0">
+        <DataTable
+          fill
+          columns={columns}
+          rows={team}
+          getRowId={m => m.id}
+          loading={loading}
+          paginated={false}
+          rowSx={m => (m.is_active ? undefined : { opacity: 0.62 })}
+          empty={
+            <EmptyState
+              icon="👩‍💼"
+              title="مفيش حسابات لسه"
+              description="ضيفي أول حساب للفريق"
+              action={addButton}
+            />
+          }
+        />
         </div>
       )}
 

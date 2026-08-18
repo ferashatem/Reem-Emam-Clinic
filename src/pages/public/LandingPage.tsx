@@ -1,9 +1,13 @@
 import { useLayoutEffect, useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import '../../App.css'
 import Navbar from '../../components/Navbar'
 import Hero from '../../components/Hero'
 import Ribbon from '../../components/Ribbon'
-import Testimonials from '../../components/Testimonials'
+// Hidden until there are real reviews to show — `Welcome` holds the slot and
+// says the honest thing in the meantime.
+// import Testimonials from '../../components/Testimonials'
+import Welcome from '../../components/Welcome'
 import Booking from '../../components/Booking'
 import Footer from '../../components/Footer'
 
@@ -14,6 +18,18 @@ export default function LandingPage() {
     document.body.classList.add('landing-page')
     return () => document.body.classList.remove('landing-page')
   }, [])
+
+  // Arriving from another page as `/#booking`. The router restores the route,
+  // not the anchor, so the jump has to be made by hand — after a frame, once
+  // the sections below have actually been laid out.
+  const { hash } = useLocation()
+  useEffect(() => {
+    if (!hash) return
+    const target = document.querySelector(hash)
+    if (!target) return
+    const id = requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth' }))
+    return () => cancelAnimationFrame(id)
+  }, [hash])
 
   // Reveal-on-scroll. A hidden section is worse than an un-animated one, so the
   // slightest sliver counts as "in view", and anything the page has already
@@ -64,7 +80,8 @@ export default function LandingPage() {
       <main className="lp-main">
         <Hero />
         <Ribbon />
-        <Testimonials />
+        {/* <Testimonials /> */}
+        <Welcome />
         <Booking />
       </main>
       <Footer />

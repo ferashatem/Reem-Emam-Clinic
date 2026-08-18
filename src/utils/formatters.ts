@@ -6,6 +6,17 @@ export function todayISO(): string {
   return toISODate(new Date())
 }
 
+/**
+ * 'YYYY-MM-DD' for `days` days ago — the far edge of a query window. Screens
+ * ask the server for a window rather than for the whole archive, so what they
+ * cost stays the same in year five as it was in week one.
+ */
+export function daysAgo(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return toISODate(d)
+}
+
 export function toISODate(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')

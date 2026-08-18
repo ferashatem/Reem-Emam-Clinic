@@ -19,6 +19,15 @@ export const auth = getAuth(app)
 if (import.meta.env.DEV) {
   auth.settings.appVerificationDisabledForTesting = true
 }
+/**
+ * Plain in-memory Firestore, deliberately.
+ *
+ * IndexedDB persistence was measured at +21 kB gzipped on the first download —
+ * paid by every visitor to the public site, who gets nothing back for it, while
+ * the screens that would benefit already hold live queries that keep their own
+ * local view. If the dashboard ever moves to its own entry point, it becomes
+ * worth turning on there.
+ */
 export const db = getFirestore(app)
 export const storage = getStorage(app)
 export default app

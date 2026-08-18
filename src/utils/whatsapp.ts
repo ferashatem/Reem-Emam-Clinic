@@ -1,7 +1,7 @@
 const GOOGLE_REVIEW_LINK = 'https://g.page/r/reem-glow-house/review'
 
 /**
- * No price line: the total depends on the pulse count, which nobody knows
+ * No price line: the total is only agreed after the session, and nobody knows
  * until the session is over. Quoting a number here would be a guess.
  */
 export function buildConfirmationMessage(params: {

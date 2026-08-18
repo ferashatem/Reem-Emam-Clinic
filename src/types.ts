@@ -55,10 +55,8 @@ export interface Service {
    * takes its service's length.
    */
   duration_minutes?: number
-  /** Flat session price. Used when price_per_pulse is not set. */
+  /** What one session of this service costs. */
   price?: number | null
-  /** When set (> 0), the booking form charges pulses × this value. */
-  price_per_pulse?: number | null
   is_active?: boolean
   created_at?: Timestamp
   deleted_at?: Timestamp | null
@@ -77,13 +75,9 @@ export interface Reservation {
    * whoever books next. Absent = the booking holds the whole hour.
    */
   duration_minutes?: number | null
-  /** Number of laser pulses delivered in this session. */
-  pulses?: number | null
-  /** Snapshot of the service's per-pulse price at booking time. */
-  price_per_pulse?: number | null
   /**
-   * Final agreed total. Stays 0 until the session is closed — the pulse count
-   * (and so the price) is only known after the laser has actually run.
+   * Final agreed total. Stays 0 until the session is closed — nothing is
+   * charged against a booking until someone has actually agreed the figure.
    */
   price_at_booking: number
   /** Set when the session was closed and priced. Null = not priced yet. */

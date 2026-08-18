@@ -33,7 +33,8 @@ export default function Timetable() {
       setLoading(true)
       const [tSlots, res, cls, svcs] = await Promise.all([
         getTimetable(userProfile!.uid, startDay, endDay),
-        getReservations({ adminId: userProfile!.uid }),
+        // The grid only ever draws this week, so that's the query.
+        getReservations({ adminId: userProfile!.uid, from: startDay, to: endDay }),
         getClients(),
         getServices(),
       ])

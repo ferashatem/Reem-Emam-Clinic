@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../../context/AuthContext'
 import { getReservations, getClients, getServices } from '../../services/firestore'
 import { buildConfirmationMessage, buildReviewMessage, buildWhatsAppLink } from '../../utils/whatsapp'
-import { formatDateAr } from '../../utils/formatters'
+import { daysAgo, formatDateAr } from '../../utils/formatters'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
@@ -19,7 +19,9 @@ export default function WhatsApp() {
     if (!userProfile) return
     async function load() {
       const [res, cls, svcs] = await Promise.all([
-        getReservations({ adminId: userProfile!.uid }),
+        // Confirmations go out before the session and review requests just
+        // after it, so a short window either side of today is the whole job.
+        getReservations({ adminId: userProfile!.uid, from: daysAgo(30) }),
         getClients(),
         getServices(),
       ])

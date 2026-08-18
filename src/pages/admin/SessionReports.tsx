@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import { getSessionReports, createSessionReport } from '../../services/firestore'
 import { getClients, getReservations } from '../../services/firestore'
+import { daysAgo } from '../../utils/formatters'
 import { uploadSessionPhotos } from '../../services/storage'
 import { useAuth } from '../../context/AuthContext'
 import Modal from '../../components/ui/Modal'
@@ -48,7 +49,9 @@ export default function SessionReports() {
     const [reps, cls, res] = await Promise.all([
       getSessionReports(),
       getClients(),
-      getReservations(),
+      // Reports get written up while the session is fresh, so the picker only
+      // needs recent ones — not every session the clinic has ever run.
+      getReservations({ from: daysAgo(120) }),
     ])
     setReports(reps as any[])
     setClients(cls as any[])

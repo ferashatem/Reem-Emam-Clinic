@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -13,15 +13,30 @@ import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
-import Tabs from '../../components/ui/Tabs'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
-import { PricingPill, SourcePill } from '../../components/ui/Pills'
-import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
+import { ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Select, Textarea, Button } from '../../components/ui/Form'
+import DataTable, { type Column } from '../../components/ui/DataTable'
+import RowMenu, { type RowAction } from '../../components/ui/RowMenu'
+import MuiButton from '@mui/material/Button'
+import Stack from '@mui/material/Stack'
+import Box from '@mui/material/Box'
+import MuiTabs from '@mui/material/Tabs'
+import Tab from '@mui/material/Tab'
+import Chip from '@mui/material/Chip'
+import TextField from '@mui/material/TextField'
+import InputAdornment from '@mui/material/InputAdornment'
+import SearchRounded from '@mui/icons-material/SearchRounded'
+import AddRounded from '@mui/icons-material/AddRounded'
+import EditRounded from '@mui/icons-material/EditRounded'
+import WhatsAppIcon from '@mui/icons-material/WhatsApp'
+import DoneAllRounded from '@mui/icons-material/DoneAllRounded'
+import CancelOutlined from '@mui/icons-material/CancelOutlined'
+import DeleteOutlineRounded from '@mui/icons-material/DeleteOutlineRounded'
 import {
-  formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
+  daysAgo, formatDateShort, formatMoney, formatTime, todayISO, toNumber, isPastSlot,
 } from '../../utils/formatters'
-import { dueOf, isPriced, perPulseOf, priceLabel } from '../../utils/pricing'
+import { dueOf, isPriced, priceOf, priceLabel } from '../../utils/pricing'
 import {
   groupServices, optionsOf, pricedService, serviceLabel, sessionMinutes,
 } from '../../utils/services'
@@ -33,18 +48,17 @@ import { buildWhatsAppLink, buildConfirmationMessage } from '../../utils/whatsap
 import { C } from '../../theme'
 import type { Client, Reservation, Service } from '../../types'
 
-type TabKey = 'requests' | 'today' | 'upcoming' | 'past'
+type TabKey = 'today' | 'upcoming' | 'past'
 
 /**
- * A booking is only who, what, and when. The pulse count — and so the price —
- * can't exist until the laser has actually run, so neither is asked for here;
- * both are filled in when the session is closed.
+ * A booking is only who, what, and when. The price isn't settled until the
+ * session actually happens, so it isn't asked for here — it's filled in when
+ * the session is closed.
  */
 interface BookingForm {
   client_id: string
   new_name: string
   new_phone: string
-  new_age: string
   /** The main service — «ليزر». Narrows what the next field offers. */
   main_id: string
   /** What actually gets booked: the type inside, or the service itself. */
@@ -54,31 +68,56 @@ interface BookingForm {
   notes: string
 }
 
+/**
+ * How far back the archive tab reaches. The screen is the desk's working view,
+ * not the clinic's permanent record — a patient's whole history lives on her
+ * own file, which is fetched by client id and costs the same however old the
+ * clinic gets.
+ */
+const ARCHIVE_WINDOW_DAYS = 90
+
 const emptyForm: BookingForm = {
-  client_id: '', new_name: '', new_phone: '', new_age: '',
+  client_id: '', new_name: '', new_phone: '',
   main_id: '', service_id: '', date: todayISO(), time: '', notes: '',
 }
 
 export default function StaffReservations() {
   const { userProfile } = useAuth()
   const { confirm, dialog } = useConfirm()
-  /** The assistant takes the money; the doctor records the pulses. */
+  /** The assistant takes the money; the doctor closes the session. */
   const collecting = userProfile?.role === 'staff'
 
   const { data, loading, error, reload } = useLoader(async () => {
-    const [reservations, clients, services] = await Promise.all([
-      getReservations(), getClients(), getActiveServices(),
+    const [reservations, services] = await Promise.all([
+      // A window, not the whole archive: this query used to grow by a few
+      // thousand documents a year and be paid for on every single page load.
+      getReservations({ from: daysAgo(ARCHIVE_WINDOW_DAYS) }),
+      getActiveServices(),
     ])
     // Publishes the upcoming days to the public site's slot mirror, once per
     // session — bookings made before the mirror existed still have to show up
     // as taken on the website.
     void backfillAvailability(reservations, services)
-    return { reservations, clients, services }
+    return { reservations, services }
   }, [])
 
   const reservations = useMemo(() => data?.reservations ?? [], [data])
-  const clients = useMemo(() => data?.clients ?? [], [data])
   const services = useMemo(() => data?.services ?? [], [data])
+
+  /**
+   * The patient list is only ever needed by the booking form's picker, so it
+   * is fetched the first time that form opens rather than on every visit to
+   * this screen. Every row here already carries the name it was booked under.
+   */
+  const [clients, setClients] = useState<Client[]>([])
+  const clientsRequested = useRef(false)
+  function ensureClients() {
+    if (clientsRequested.current) return
+    clientsRequested.current = true
+    getClients()
+      .then(setClients)
+      .catch(() => { clientsRequested.current = false })
+  }
 
   const [tab, setTab] = useState<TabKey>('today')
   const [search, setSearch] = useState('')
@@ -111,19 +150,18 @@ export default function StaffReservations() {
     return pricedService(serviceMap[r.service_id], services)
   }
 
-  // ─── Bucketing: website requests / today / upcoming / done ────────────────
+  /**
+   * Bucketed by when it happens, and by nothing else. A request that came
+   * from the site is a booking like any other — it sits on its own day next
+   * to the ones taken over the phone, carrying its source and its status.
+   */
   const buckets = useMemo(() => {
     const today = todayISO()
-    const requests: Reservation[] = []
     const todayList: Reservation[] = []
     const upcoming: Reservation[] = []
     const past: Reservation[] = []
 
     for (const r of reservations) {
-      if (r.status === 'pending' && r.booked_by === 'client') {
-        requests.push(r)
-        continue
-      }
       if (r.status === 'completed' || r.status === 'cancelled') {
         past.push(r)
       } else if (r.date === today) {
@@ -139,7 +177,6 @@ export default function StaffReservations() {
       `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
 
     return {
-      requests,
       today: todayList.sort(byTime),
       upcoming: upcoming.sort(byTime),
       past: past.sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`)),
@@ -283,14 +320,12 @@ export default function StaffReservations() {
   /** The rate to quote always sits on the main service, never on the type. */
   const selectedService = serviceMap[watchedMain]
 
-  /** The listed rate, for reference only — nothing is charged at booking time. */
+  /** The listed price, for reference only — nothing is charged at booking time. */
   const rateHint = !selectedService
     ? undefined
-    : perPulseOf(selectedService) > 0
-      ? `${formatMoney(selectedService.price_per_pulse)} للنبضة — الإجمالي بيتحسب بعد الجلسة`
-      : toNumber(selectedService.price) > 0
-        ? `سعر ثابت ${formatMoney(selectedService.price)}`
-        : 'السعر بيتحدد وقت إنهاء الجلسة'
+    : priceOf(selectedService) > 0
+      ? `سعر الجلسة ${formatMoney(selectedService.price)}`
+      : 'السعر بيتحدد وقت إنهاء الجلسة'
 
   const filteredClients = useMemo(() => {
     const q = clientSearch.trim().toLowerCase()
@@ -316,39 +351,28 @@ export default function StaffReservations() {
       r => sessionMinutes(serviceMap[r.service_id], services)),
     [reservations, watchedDate, editTarget, serviceMap, services]
   )
-  const whoIsIn = useMemo(
-    () => takenSlots(reservations, watchedDate, editTarget?.id),
-    [reservations, watchedDate, editTarget]
-  )
-
   const slotOptions = useMemo(() => {
     const current = slotOf(watchedTime)
-    const list = CLINIC_SLOTS.map(slot => {
-      const used = usage.get(slot) ?? 0
-      return {
-        slot,
-        used,
-        // An hour holds 60 minutes; it's only closed once this session no
-        // longer fits in what's left of it.
-        full: !fitsInSlot(used, minutes),
-        names: (whoIsIn.get(slot) ?? []).map(nameOf),
-        past: isSlotPast(watchedDate, slot),
-      }
-    })
+    const list = CLINIC_SLOTS.map(slot => ({
+      slot,
+      // An hour holds 60 minutes; it's only closed once this session no longer
+      // fits in what's left of it.
+      full: !fitsInSlot(usage.get(slot) ?? 0, minutes),
+      past: isSlotPast(watchedDate, slot),
+    }))
     // A booking made before the fixed hours (or from the website) can sit on an
     // off-grid time — keep it selectable so editing doesn't silently move it.
     if (watchedTime && !CLINIC_SLOTS.includes(watchedTime) && current) {
-      list.push({ slot: watchedTime, used: 0, full: false, names: [], past: false })
+      list.push({ slot: watchedTime, full: false, past: false })
       list.sort((a, b) => a.slot.localeCompare(b.slot))
     }
     return list
-    // `nameOf` only reads clientMap, which `whoIsIn` already tracks
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usage, whoIsIn, minutes, watchedDate, watchedTime, clientMap])
+  }, [usage, minutes, watchedDate, watchedTime])
 
   const freeCount = slotOptions.filter(o => !o.full && !o.past).length
 
   function openCreate() {
+    ensureClients()
     setEditTarget(null)
     setIsNewClient(false)
     setClientSearch('')
@@ -357,6 +381,7 @@ export default function StaffReservations() {
   }
 
   function openEdit(r: Reservation) {
+    ensureClients()
     setEditTarget(r)
     setIsNewClient(false)
     // Seed the search so the booked client is guaranteed to be in the visible list
@@ -393,7 +418,6 @@ export default function StaffReservations() {
     const ref = await createClient({
       name: values.new_name.trim(),
       phone,
-      age: values.new_age ? toNumber(values.new_age) : null,
       source: 'walk-in',
       uid: null,
     })
@@ -424,7 +448,6 @@ export default function StaffReservations() {
         )
       }
 
-      const rate = perPulseOf(pricedService(service, services))
       const payload: Record<string, unknown> = {
         client_id: client.id,
         client_name: client.name ?? '',
@@ -439,18 +462,13 @@ export default function StaffReservations() {
       }
 
       if (editTarget) {
-        // Re-snapshot the rate only while the session is still unpriced —
-        // once it's closed, the number the client was actually charged wins.
-        if (!isPriced(editTarget)) payload.price_per_pulse = rate > 0 ? rate : null
         await updateReservation(editTarget.id, payload)
         toast.success('تم تعديل الحجز ✅')
       } else {
         await createReservation({
           ...payload,
-          // The rate is pinned now; the service's price may change before the
-          // client actually sits down, but this is the deal that was struck.
-          price_per_pulse: rate > 0 ? rate : null,
-          pulses: null,
+          // Nothing is charged at booking time — the total is agreed and
+          // written when the session is closed.
           price_at_booking: 0,
           priced_at: null,
           status: 'confirmed',
@@ -470,130 +488,309 @@ export default function StaffReservations() {
     }
   }
 
-  const tabs = [
-    { value: 'requests' as const, label: 'طلبات من الموقع', count: buckets.requests.length },
-    { value: 'today' as const, label: 'النهاردة', count: buckets.today.length },
-    { value: 'upcoming' as const, label: 'الجاية', count: buckets.upcoming.length },
-    { value: 'past' as const, label: 'اللي خلص', count: buckets.past.length },
-  ]
+  /** Past its hour and still not closed — the row the desk has to chase. */
+  function overdue(r: Reservation) {
+    return r.status !== 'completed' && r.status !== 'cancelled' && isPastSlot(r.date, r.time)
+  }
 
+  /**
+   * The one thing this row is waiting for. The assistant collects money, the
+   * doctor closes sessions, and a request from the site needs confirming before
+   * either — so each row offers exactly one button, and never all of them.
+   */
+  function primaryAction(r: Reservation) {
+    if (r.status === 'pending') {
+      return { label: 'تأكيد', color: 'success' as const, onClick: () => handleConfirm(r) }
+    }
+    const closable = r.status === 'confirmed'
+    const needsPricing = r.status === 'completed' && !isPriced(r)
+    if (collecting) {
+      return isPriced(r) && dueOf(r) > 0
+        ? { label: `تحصيل ${formatMoney(dueOf(r))}`, color: 'primary' as const, onClick: () => setClosing(r) }
+        : null
+    }
+    return closable || needsPricing
+      ? { label: needsPricing ? 'تسعير' : 'إنهاء الجلسة', color: 'primary' as const, onClick: () => setClosing(r) }
+      : null
+  }
+
+  const columns = useMemo<Column<Reservation>[]>(() => [
+    {
+      id: 'client',
+      label: 'العميلة',
+      sortValue: r => nameOf(r),
+      width: '22%',
+      render: r => (
+        <div>
+          <p className="font-semibold" style={{ color: C.text }}>{nameOf(r)}</p>
+          <p className="text-xs text-gray-400" dir="ltr">{phoneOf(r) || '—'}</p>
+          {/* With the website tab gone, this is the only thing that says where
+              the booking came from — so it has to be readable, not a whisper. */}
+          <Chip
+            size="small"
+            variant="outlined"
+            label={r.booked_by === 'client' ? '🌐 من الموقع' : '☎️ من العيادة'}
+            sx={{
+              height: 20,
+              mt: 0.5,
+              fontSize: '0.68rem',
+              fontWeight: 600,
+              ...(r.booked_by === 'client'
+                ? { color: C.blue, borderColor: '#BFDBFE', backgroundColor: '#EFF6FF' }
+                : { color: '#6B7280', borderColor: '#E5E7EB' }),
+            }}
+          />
+        </div>
+      ),
+    },
+    {
+      id: 'service',
+      label: 'الخدمة',
+      sortValue: r => serviceOf(r),
+      render: r => (
+        <p className="text-gray-700">{serviceOf(r)}</p>
+      ),
+    },
+    {
+      id: 'when',
+      label: 'المعاد',
+      sortValue: r => `${r.date} ${r.time}`,
+      width: 140,
+      render: r => (
+        <div className="whitespace-nowrap">
+          <p className="text-gray-700">{formatDateShort(r.date)}</p>
+          <p className="text-xs text-gray-400">{formatTime(r.time)}</p>
+        </div>
+      ),
+    },
+    {
+      id: 'status',
+      label: 'الحالة',
+      sortValue: r => r.status,
+      width: 110,
+      render: r => <StatusBadge status={r.status} />,
+    },
+    {
+      id: 'money',
+      label: 'الإجمالي والدفع',
+      sortValue: r => toNumber(r.price_at_booking),
+      hideBelow: 'md',
+      width: 150,
+      render: r => (
+        <div className="whitespace-nowrap">
+          <PriceText r={r} service={rateDocOf(r)} />
+          <div className="mt-1"><PaymentCell r={r} /></div>
+        </div>
+      ),
+    },
+    {
+      id: 'actions',
+      label: '',
+      align: 'left',
+      width: 170,
+      render: r => {
+        const primary = primaryAction(r)
+        const closed = r.status === 'completed' || r.status === 'cancelled'
+        // Closing a session is the primary button on some rows; it only needs
+        // to appear in the menu on the rows where it isn't.
+        const closeInMenu = !closed && primary?.onClick !== undefined
+          && primary.label !== 'إنهاء الجلسة' && primary.label !== 'تسعير'
+        const wa = waLink(r)
+        const menu: RowAction[] = [
+          { label: 'تعديل', icon: <EditRounded fontSize="small" />, onClick: () => openEdit(r) },
+          { label: 'واتساب', icon: <WhatsAppIcon fontSize="small" />, href: wa, hidden: !wa, onClick: () => {} },
+          {
+            label: 'إنهاء الجلسة',
+            icon: <DoneAllRounded fontSize="small" />,
+            onClick: () => setClosing(r),
+            hidden: !closeInMenu,
+          },
+          {
+            label: 'إلغاء الحجز',
+            icon: <CancelOutlined fontSize="small" />,
+            onClick: () => handleCancel(r),
+            hidden: closed,
+            danger: true,
+          },
+          {
+            label: 'مسح',
+            icon: <DeleteOutlineRounded fontSize="small" />,
+            onClick: () => handleDelete(r),
+            hidden: !closed,
+            danger: true,
+          },
+        ]
+        return (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            sx={{ alignItems: 'center', justifyContent: 'flex-end' }}
+          >
+            {primary && (
+              <MuiButton
+                size="small"
+                variant={primary.color === 'success' ? 'contained' : 'outlined'}
+                color={primary.color}
+                disabled={busyId === r.id}
+                onClick={primary.onClick}
+                sx={{ whiteSpace: 'nowrap', minWidth: 0 }}
+              >
+                {primary.label}
+              </MuiButton>
+            )}
+            <RowMenu actions={menu} disabled={busyId === r.id} />
+          </Stack>
+        )
+      },
+    },
+    // Recreated per render on purpose: every cell above reads live state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [clientMap, serviceMap, services, busyId, collecting])
+
+  /**
+   * The new-booking button sits in the table's own toolbar rather than up in
+   * the page header: it belongs with the list it adds to, and the header stays
+   * a title instead of a third bar of controls.
+   */
   const addButton = (
-    <Button onClick={openCreate} className="w-full sm:w-auto">+ حجز جديد</Button>
+    <MuiButton
+      variant="contained"
+      startIcon={<AddRounded />}
+      onClick={openCreate}
+      sx={{ whiteSpace: 'nowrap' }}
+    >
+      حجز جديد
+    </MuiButton>
   )
 
+  /** Waiting on someone to confirm it — wherever it was booked from. */
+  const pendingCount = useMemo(
+    () => buckets[tab].filter(r => r.status === 'pending').length,
+    [buckets, tab]
+  )
+
+  /** The day's work: what is happening now, what is coming, and the archive. */
+  const tabs = [
+    { value: 'today' as const, label: 'النهاردة', count: buckets.today.length },
+    { value: 'upcoming' as const, label: 'الجاية', count: buckets.upcoming.length },
+    { value: 'past' as const, label: 'الأرشيف', count: buckets.past.length },
+  ]
+
+  const tableHeader = (
+    <>
+      <MuiTabs
+        value={tab}
+        onChange={(_, v: TabKey) => setTab(v)}
+        variant="scrollable"
+        scrollButtons={false}
+        sx={{
+          px: 1,
+          borderBottom: `1px solid ${C.primarySoft}`,
+          '& .MuiTab-root': { minHeight: 52, fontWeight: 700, fontSize: '0.85rem' },
+        }}
+      >
+        {tabs.map(t => (
+          <Tab
+            key={t.value}
+            value={t.value}
+            label={
+              <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center' }}>
+                <span>{t.label}</span>
+                {t.count > 0 && (
+                  <Chip
+                    size="small"
+                    label={t.count}
+                    sx={{ height: 20, minWidth: 20, fontSize: '0.7rem', pointerEvents: 'none' }}
+                  />
+                )}
+              </Stack>
+            }
+          />
+        ))}
+      </MuiTabs>
+
+      <Box
+        sx={{
+          px: 2,
+          py: 1.5,
+          display: 'flex',
+          gap: 1.5,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          borderBottom: `1px solid ${C.primarySoft}`,
+        }}
+      >
+        <TextField
+          size="small"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="بحث بالاسم أو التليفون"
+          sx={{ flex: '1 1 260px', maxWidth: 380 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchRounded fontSize="small" sx={{ color: C.primary, opacity: 0.6 }} />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+        <Box sx={{ fontSize: '0.8rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+          {visible.length} من {reservations.length}
+        </Box>
+        {/* The count the desk acts on — the rows themselves are marked too. */}
+        {pendingCount > 0 && (
+          <Chip
+            size="small"
+            color="warning"
+            variant="outlined"
+            label={`${pendingCount} محتاجة تأكيد`}
+            sx={{ fontSize: '0.75rem' }}
+          />
+        )}
+        <Box sx={{ marginInlineStart: 'auto' }}>{addButton}</Box>
+      </Box>
+    </>
+  )
+
+
   return (
-    <div>
+    // The screen is the frame: the header stays, the rows scroll inside the
+    // table, and the page itself never grows a scrollbar.
+    <div className="h-full min-h-0 flex flex-col">
       <PageHeader
         title="الحجوزات"
         subtitle={`${reservations.length} حجز في المجموع`}
-        action={addButton}
       />
 
-      {buckets.requests.length > 0 && tab !== 'requests' && (
-        <button
-          onClick={() => setTab('requests')}
-          className="w-full mb-4 rounded-2xl px-4 py-3 text-sm font-medium text-start border"
-          style={{ backgroundColor: '#FFF7ED', borderColor: '#FDBA74', color: '#9A3412' }}
-        >
-          🔔 في {buckets.requests.length} طلب حجز جديد من الموقع محتاج تأكيد — اضغطي هنا
-        </button>
-      )}
-
-      <div className="space-y-3 mb-5">
-        <Tabs tabs={tabs} value={tab} onChange={setTab} />
-        <Input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="ابحثي بالاسم أو رقم التليفون..."
-          aria-label="بحث"
-        />
-      </div>
-
-      {loading ? (
-        <LoadingBlock />
-      ) : error ? (
+      {error ? (
         <ErrorState message={error} onRetry={reload} />
-      ) : visible.length === 0 ? (
-        <EmptyState
-          icon={search ? '🔍' : '📅'}
-          title={search ? 'مفيش نتائج للبحث ده' : emptyTitles[tab]}
-          description={search ? 'جربي اسم أو رقم تاني' : undefined}
-          action={!search && tab !== 'requests' ? addButton : undefined}
-        />
       ) : (
-        <>
-          {/* Mobile: cards */}
-          <div className="space-y-3 lg:hidden">
-            {visible.map(r => (
-              <ReservationCard
-                key={r.id}
-                r={r}
-                name={nameOf(r)}
-                service={serviceOf(r)}
-                serviceDoc={rateDocOf(r)}
-                collecting={collecting}
-                busy={busyId === r.id}
-                waHref={waLink(r)}
-                onConfirm={() => handleConfirm(r)}
-                onComplete={() => setClosing(r)}
-                onCancel={() => handleCancel(r)}
-                onEdit={() => openEdit(r)}
-                onDelete={() => handleDelete(r)}
-              />
-            ))}
-          </div>
-
-          {/* Desktop: table */}
-          <div className="hidden lg:block bg-white rounded-2xl shadow-sm border overflow-hidden" style={{ borderColor: C.primarySoft }}>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead style={{ backgroundColor: C.bg }}>
-                  <tr>
-                    {['العميلة', 'الخدمة', 'النبضات', 'التاريخ', 'الوقت', 'الإجمالي', 'الدفع', 'الحالة', ''].map(h => (
-                      <th key={h} className="text-start text-xs font-semibold px-4 py-3 whitespace-nowrap" style={{ color: C.primary }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map(r => (
-                    <tr key={r.id} className="border-t hover:bg-[#FDF6F0]/60 transition-colors" style={{ borderColor: '#F2C4CE30' }}>
-                      <td className="px-4 py-3">
-                        <p className="font-medium">{nameOf(r)}</p>
-                        <p className="text-xs text-gray-400 tabular-nums" dir="ltr">{phoneOf(r) || '—'}</p>
-                        <SourcePill bookedBy={r.booked_by} />
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        <p>{serviceOf(r)}</p>
-                        <PricingPill reservation={r} service={rateDocOf(r)} className="mt-1" />
-                      </td>
-                      <td className="px-4 py-3 text-gray-600 tabular-nums">{r.pulses ? `${r.pulses} نبضة` : '—'}</td>
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDateShort(r.date)}</td>
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatTime(r.time)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap tabular-nums">
-                        <PriceText r={r} service={rateDocOf(r)} />
-                      </td>
-                      <td className="px-4 py-3"><PaymentCell r={r} /></td>
-                      <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                      <td className="px-4 py-3">
-                        <RowActions
-                          r={r}
-                          collecting={collecting}
-                          busy={busyId === r.id}
-                          waHref={waLink(r)}
-                          onConfirm={() => handleConfirm(r)}
-                          onComplete={() => setClosing(r)}
-                          onCancel={() => handleCancel(r)}
-                          onEdit={() => openEdit(r)}
-                          onDelete={() => handleDelete(r)}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </>
+        <div className="flex-1 min-h-0">
+        <DataTable
+          fill
+          columns={columns}
+          rows={visible}
+          getRowId={r => r.id}
+          loading={loading}
+          header={tableHeader}
+          rowSx={r => {
+            if (overdue(r)) return { backgroundColor: '#FFF7ED' }
+            // Not confirmed yet — most of these came in off the site overnight
+            if (r.status === 'pending') return { backgroundColor: '#FFFBEB' }
+            return undefined
+          }}
+          empty={
+            <EmptyState
+              icon={search ? '🔍' : '📅'}
+              title={search ? 'مفيش نتائج للبحث ده' : emptyTitles[tab]}
+              description={search ? 'جربي اسم أو رقم تاني' : undefined}
+              action={!search ? addButton : undefined}
+            />
+          }
+        />
+        </div>
       )}
 
       {/* ─── Booking modal ───────────────────────────────────────────────── */}
@@ -638,23 +835,18 @@ export default function StaffReservations() {
                   placeholder="مثال: سارة أحمد"
                 />
               </Field>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Field label="رقم التليفون" required error={errors.new_phone?.message}>
-                  <Input
-                    {...register('new_phone', {
-                      required: 'اكتبي رقم التليفون',
-                      validate: v => validateEgyptianPhone(v) || 'الرقم مش صحيح',
-                    })}
-                    invalid={!!errors.new_phone}
-                    dir="ltr"
-                    inputMode="tel"
-                    placeholder="01012345678"
-                  />
-                </Field>
-                <Field label="السن" error={errors.new_age?.message}>
-                  <Input {...register('new_age')} type="number" inputMode="numeric" min={1} max={120} placeholder="اختياري" />
-                </Field>
-              </div>
+              <Field label="رقم التليفون" required error={errors.new_phone?.message}>
+                <Input
+                  {...register('new_phone', {
+                    required: 'اكتبي رقم التليفون',
+                    validate: v => validateEgyptianPhone(v) || 'الرقم مش صحيح',
+                  })}
+                  invalid={!!errors.new_phone}
+                  dir="ltr"
+                  inputMode="tel"
+                  placeholder="01012345678"
+                />
+              </Field>
             </div>
           ) : (
             <Field label="العميلة" required error={errors.client_id?.message}>
@@ -714,13 +906,9 @@ export default function StaffReservations() {
               <option value="">اختاري الخدمة...</option>
               {mainServices.map(s => {
                 const inner = optionsOf(services, s.id).length
-                // Older services still carry a rate; newer ones are priced when
-                // the session ends, so there's nothing to put next to the name.
-                const rate = perPulseOf(s) > 0
-                  ? ` — ${formatMoney(s.price_per_pulse)} / نبضة`
-                  : toNumber(s.price) > 0
-                    ? ` — ${formatMoney(s.price)}`
-                    : ''
+                // A service with no price yet is priced when its session ends,
+                // so there's nothing to put next to the name.
+                const rate = priceOf(s) > 0 ? ` — ${formatMoney(s.price)}` : ''
                 return (
                   <option key={s.id} value={s.id}>
                     {s.name}{rate}{inner > 0 ? ` · ${inner} نوع` : ''}
@@ -774,16 +962,17 @@ export default function StaffReservations() {
                 invalid={!!errors.time}
               >
                 <option value="">اختاري المعاد...</option>
-                {/* An hour that's part-booked still shows what's left of it,
-                    and who is already in it. */}
-                {slotOptions.map(({ slot, used, full, names, past }) => (
-                  <option key={slot} value={slot} disabled={full || past}>
+                {/* An hour is either open for this session or it isn't — who's
+                    already in it comes out only if a save actually collides. */}
+                {slotOptions.map(({ slot, full, past }) => (
+                  <option
+                    key={slot}
+                    value={slot}
+                    disabled={full || past}
+                    style={full ? { color: '#C0392B' } : undefined}
+                  >
                     {formatTime(slot)}
-                    {full
-                      ? ` — مليانة (${names.join('، ')})`
-                      : used > 0
-                        ? ` — فاضل ${freeMinutes(used)} د (${names.join('، ')})`
-                        : past ? ' — فات' : ''}
+                    {full ? ' — مليانة' : past ? ' — فات' : ''}
                   </option>
                 ))}
               </Select>
@@ -818,7 +1007,6 @@ export default function StaffReservations() {
 }
 
 const emptyTitles: Record<TabKey, string> = {
-  requests: 'مفيش طلبات حجز من الموقع',
   today: 'مفيش حجوزات النهاردة',
   upcoming: 'مفيش حجوزات جاية',
   past: 'مفيش حجوزات سابقة',
@@ -846,126 +1034,6 @@ function PaymentCell({ r }: { r: Reservation }) {
       {status === 'partial' && (
         <p className="text-xs text-gray-400 mt-1">{formatMoney(paid)} من {formatMoney(total)}</p>
       )}
-    </div>
-  )
-}
-
-interface ActionProps {
-  r: Reservation
-  /** The assistant collects; the doctor prices. Changes what the button offers. */
-  collecting: boolean
-  busy: boolean
-  waHref: string
-  onConfirm: () => void
-  onComplete: () => void
-  onCancel: () => void
-  onEdit: () => void
-  onDelete: () => void
-}
-
-function RowActions({
-  r, collecting, busy, waHref, onConfirm, onComplete, onCancel, onEdit, onDelete,
-}: ActionProps) {
-  const canConfirm = r.status === 'pending'
-  const canComplete = r.status === 'confirmed' || r.status === 'pending'
-  const closed = r.status === 'completed' || r.status === 'cancelled'
-  // A finished-but-unpriced session still owes us its pulse count.
-  const needsPricing = r.status === 'completed' && !isPriced(r)
-  // The assistant only has something to do here once there's a total to collect.
-  const showAction = collecting
-    ? isPriced(r) && dueOf(r) > 0
-    : canComplete || needsPricing
-
-  return (
-    <div className="flex gap-1.5 justify-end flex-wrap">
-      {canConfirm && (
-        <Button size="sm" variant="success" onClick={onConfirm} disabled={busy}>تأكيد</Button>
-      )}
-      {showAction && (
-        <Button size="sm" onClick={onComplete} disabled={busy}>
-          {collecting ? `تحصيل ${formatMoney(dueOf(r))}` : 'إنهاء الجلسة'}
-        </Button>
-      )}
-      {waHref && (
-        <a
-          href={waHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-3 py-2 rounded-xl text-xs font-medium text-white border border-transparent"
-          style={{ backgroundColor: '#25D366' }}
-        >
-          واتساب
-        </a>
-      )}
-      <Button size="sm" variant="outline" onClick={onEdit} disabled={busy}>تعديل</Button>
-      {!closed && (
-        <Button size="sm" variant="outline" onClick={onCancel} disabled={busy} style={{ borderColor: '#FECACA', color: C.red }}>
-          إلغاء
-        </Button>
-      )}
-      {closed && (
-        <Button size="sm" variant="outline" onClick={onDelete} disabled={busy} style={{ borderColor: '#FECACA', color: C.red }}>
-          مسح
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function ReservationCard({
-  r, name, service, serviceDoc, collecting, busy, waHref,
-  onConfirm, onComplete, onCancel, onEdit, onDelete,
-}: ActionProps & { name: string; service: string; serviceDoc?: Service }) {
-  const overdue = r.status !== 'completed' && r.status !== 'cancelled' && isPastSlot(r.date, r.time)
-
-  return (
-    <div
-      className="bg-white rounded-2xl p-4 border shadow-sm"
-      style={{ borderColor: overdue ? '#FDBA74' : C.primarySoft }}
-    >
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="min-w-0">
-          <p className="font-semibold text-sm truncate" style={{ color: C.text }}>{name}</p>
-          <p className="text-xs text-gray-500 mt-0.5 truncate">{service}</p>
-          <div className="flex items-center gap-2 mt-1.5">
-            <PricingPill reservation={r} service={serviceDoc} />
-            <SourcePill bookedBy={r.booked_by} />
-          </div>
-        </div>
-        <StatusBadge status={r.status} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs mb-3">
-        <Info label="التاريخ" value={formatDateShort(r.date)} />
-        <Info label="الوقت" value={formatTime(r.time)} />
-        {r.pulses ? <Info label="النبضات" value={`${r.pulses} نبضة`} /> : null}
-        <Info
-          label="الإجمالي"
-          value={priceLabel(r, serviceDoc).text}
-          strong={!priceLabel(r, serviceDoc).pending}
-        />
-      </div>
-
-      <div className="mb-3"><PaymentCell r={r} /></div>
-
-      {r.notes && <p className="text-xs text-gray-500 bg-gray-50 rounded-xl p-2.5 mb-3">{r.notes}</p>}
-
-      <RowActions
-        r={r} collecting={collecting} busy={busy} waHref={waHref}
-        onConfirm={onConfirm} onComplete={onComplete}
-        onCancel={onCancel} onEdit={onEdit} onDelete={onDelete}
-      />
-    </div>
-  )
-}
-
-function Info({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div>
-      <p className="text-gray-400">{label}</p>
-      <p className={strong ? 'font-semibold' : 'font-medium'} style={strong ? { color: C.primary } : undefined}>
-        {value}
-      </p>
     </div>
   )
 }

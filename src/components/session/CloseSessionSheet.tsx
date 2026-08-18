@@ -6,7 +6,7 @@ import { messageFor } from '../../hooks/useLoader'
 import Modal from '../ui/Modal'
 import { Field, Input, Textarea, Button } from '../ui/Form'
 import { formatMoney, formatTime, todayISO, toNumber } from '../../utils/formatters'
-import { computeTotal, isPriced } from '../../utils/pricing'
+import { isPriced, priceOf } from '../../utils/pricing'
 import { C } from '../../theme'
 import type { PaymentMethod, Reservation, Service } from '../../types'
 
@@ -17,21 +17,19 @@ const methods: { value: PaymentMethod; label: string }[] = [
   { value: 'card', label: 'فيزا 💳' },
 ]
 
-const pulseSteps = [10, 50, 100]
-
 interface Props {
   reservation: Reservation | null
-  /** Falls back to the rate snapshotted on the booking when the service is gone. */
+  /** Where the listed session price comes from. */
   service?: Service | null
   onClose: () => void
   onSaved: () => void
 }
 
 /**
- * Closing a session, start to finish, on one screen: the pulse count goes in,
- * the price falls out of it, and the money is taken on the spot. Whoever is at
- * the desk when the patient stands up does the whole thing — splitting it in
- * two only meant a session sat half-finished until the other person showed up.
+ * Closing a session, start to finish, on one screen: the total opens on the
+ * service's listed price, and the money is taken on the spot. Whoever is at the
+ * desk when the patient stands up does the whole thing — splitting it in two
+ * only meant a session sat half-finished until the other person showed up.
  */
 export default function CloseSessionSheet({ reservation, service, onClose, onSaved }: Props) {
   return (
@@ -66,39 +64,42 @@ function SessionForm({
 }: Props & { reservation: Reservation }) {
   const { userProfile } = useAuth()
 
-  // The rate comes off the booking's own snapshot first: the service's price
-  // may have moved since, but this is the deal that was struck.
-  const perPulse = toNumber(r.price_per_pulse) || toNumber(service?.price_per_pulse)
-  const flatPrice = toNumber(service?.price)
-  const isPerPulse = perPulse > 0
+  const listed = priceOf(service)
   const alreadyPaid = toNumber(r.paid_amount)
 
-  const [pulses, setPulses] = useState(r.pulses != null ? String(r.pulses) : '')
-  /** Null until the total is overridden by hand for a discount or a package. */
-  const [totalOverride, setTotalOverride] = useState<string | null>(
+  /**
+   * The session's total isn't negotiated at the desk: it's the service's listed
+   * price, and a session already closed keeps whatever it was closed at. This
+   * only holds a typed figure in the one case where neither exists — a service
+   * with no price yet — because otherwise the session could never be closed.
+   */
+  const [typedTotal, setTypedTotal] = useState<string | null>(
     isPriced(r) ? String(toNumber(r.price_at_booking)) : null
   )
+  /** True when the total is fixed and shown rather than asked for. */
+  const fixedTotal = listed > 0 || isPriced(r)
   const [amountOverride, setAmountOverride] = useState<string | null>(null)
   const [method, setMethod] = useState<PaymentMethod>('cash')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const computed = computeTotal(toNumber(pulses), perPulse, flatPrice)
-  const total = totalOverride ?? (computed > 0 ? String(computed) : '')
+  // A session that was already closed keeps its own total; anything else is
+  // charged at the service's listed price.
+  const total = isPriced(r)
+    ? String(toNumber(r.price_at_booking))
+    : listed > 0
+      ? String(listed)
+      : typedTotal ?? ''
   const totalValue = toNumber(total)
 
-  // What's left to collect against the total on screen right now — so editing
-  // the pulses updates the amount due before anything is even saved.
+  // What's left to collect against the total on screen right now — so the
+  // amount due is right before anything is even saved.
   const remaining = Math.max(0, totalValue - alreadyPaid)
   const amount = amountOverride ?? (remaining > 0 ? String(remaining) : '')
   const paying = toNumber(amount)
 
   async function submit() {
-    if (isPerPulse && !pulses.trim()) {
-      return setError('اكتبي عدد النبضات الأول — السعر بيتحسب منه')
-    }
-    if (toNumber(pulses) < 0) return setError('عدد النبضات مينفعش يكون بالسالب')
     if (!total.trim()) return setError('اكتبي إجمالي الجلسة')
     if (totalValue < 0) return setError('الإجمالي مينفعش يكون بالسالب')
     if (paying < 0) return setError('المبلغ المدفوع مينفعش يكون بالسالب')
@@ -111,11 +112,7 @@ function SessionForm({
     try {
       // Price first: the payment is recorded against this total, so it has to
       // be on the booking before the money lands on it.
-      await closeSession({
-        reservationId: r.id,
-        pulses: pulses.trim() ? toNumber(pulses) : null,
-        total: totalValue,
-      })
+      await closeSession({ reservationId: r.id, total: totalValue })
 
       if (paying > 0) {
         await createPayment({
@@ -151,19 +148,31 @@ function SessionForm({
     <div className="space-y-5">
       <p className="text-xs text-gray-500 rounded-xl p-3" style={{ backgroundColor: C.bg }}>
         {r.service_name || 'خدمة'} · {formatTime(r.time)}
-        {isPerPulse ? ` · ${formatMoney(perPulse)} / نبضة` : ` · سعر ثابت ${formatMoney(flatPrice)}`}
       </p>
 
-      {/* ① Pulses — the number the whole price hangs on */}
-      <Field
-        label={isPerPulse ? '① عدد النبضات' : '① عدد النبضات — للتوثيق الطبي'}
-        hint={isPerPulse ? 'السعر بيتحسب لوحده' : 'مبيأثرش على السعر — الخدمة دي بسعر ثابت'}
-      >
-        <div className="flex gap-2">
+      {/* The total is the service's price — read, not typed. The only thing
+          asked for here is how much of it the client is paying now. */}
+      {fixedTotal ? (
+        <div
+          className="rounded-2xl px-4 py-4 flex items-baseline justify-between gap-3"
+          style={{ backgroundColor: C.bg }}
+        >
+          <span className="text-sm text-gray-500">إجمالي الجلسة</span>
+          <span className="text-3xl font-bold tabular-nums" style={{ color: C.primary }}>
+            {formatMoney(totalValue)}
+          </span>
+        </div>
+      ) : (
+        // The service has no price on it yet, so there is nothing to charge
+        // against — the figure has to be entered once, here.
+        <Field
+          label="إجمالي الجلسة (جنيه)"
+          hint="الخدمة دي لسه مالهاش سعر — اكتبيه من «الخدمات» عشان ييجي جاهز المرة الجاية"
+        >
           <Input
             autoFocus
-            value={pulses}
-            onChange={e => { setPulses(e.target.value); setAmountOverride(null); setTotalOverride(null); setError(null) }}
+            value={total}
+            onChange={e => { setTypedTotal(e.target.value); setAmountOverride(null); setError(null) }}
             type="number"
             inputMode="numeric"
             min={0}
@@ -171,65 +180,12 @@ function SessionForm({
             placeholder="0"
             className="text-2xl! font-bold py-4! text-center tabular-nums"
           />
-          <div className="flex flex-col gap-1 shrink-0">
-            {pulseSteps.map(step => (
-              <button
-                key={step}
-                type="button"
-                onClick={() => {
-                  setPulses(String(toNumber(pulses) + step))
-                  setAmountOverride(null)
-                  setTotalOverride(null)
-                  setError(null)
-                }}
-                className="px-3 py-1 rounded-lg text-xs font-medium border bg-white"
-                style={{ borderColor: C.primarySoft, color: C.primary }}
-              >
-                +{step}
-              </button>
-            ))}
-          </div>
-        </div>
-      </Field>
-
-      {/* The running total, big enough to read out loud */}
-      {isPerPulse && (
-        <div
-          className="rounded-2xl px-4 py-3 flex items-baseline justify-between gap-3"
-          style={{ backgroundColor: C.bg }}
-        >
-          <span className="text-xs text-gray-500 tabular-nums">
-            {toNumber(pulses).toLocaleString('ar-EG')} × {formatMoney(perPulse)}
-          </span>
-          <span className="text-2xl font-bold tabular-nums" style={{ color: C.primary }}>
-            {formatMoney(computed)}
-          </span>
-        </div>
+        </Field>
       )}
 
-      {/* ② Total — editable for a discount or a package */}
+      {/* The money, pre-filled with everything still owed */}
       <Field
-        label="② إجمالي الجلسة (جنيه)"
-        hint={
-          totalOverride !== null && computed > 0 && totalValue !== computed
-            ? `اتعدّل يدوي — المحسوب ${formatMoney(computed)}`
-            : 'عدّليه لو فيه خصم أو عرض'
-        }
-      >
-        <Input
-          value={total}
-          onChange={e => { setTotalOverride(e.target.value); setAmountOverride(null); setError(null) }}
-          type="number"
-          inputMode="numeric"
-          min={0}
-          dir="ltr"
-          className="font-semibold tabular-nums"
-        />
-      </Field>
-
-      {/* ③ The money, pre-filled with everything still owed */}
-      <Field
-        label="③ المبلغ المدفوع دلوقتي (جنيه)"
+        label="المبلغ المدفوع دلوقتي (جنيه)"
         hint={
           alreadyPaid > 0
             ? `دفعت قبل كده ${formatMoney(alreadyPaid)} — المطلوب ${formatMoney(remaining)}`

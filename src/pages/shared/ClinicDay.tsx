@@ -1,24 +1,44 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
-  getReservations, updateReservation, getClientById, createSessionReport,
+  updateReservation, getClientById, createSessionReport,
   getReservationsByClient, getSessionReportsByClient, getPaymentsByClient,
   getActiveServices,
 } from '../../services/firestore'
-import { backfillAvailability } from '../../services/availability'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader, messageFor } from '../../hooks/useLoader'
+import { useLiveReservations } from '../../hooks/useLiveReservations'
 import { useBasePath } from '../../hooks/useBasePath'
 import Modal from '../../components/ui/Modal'
 import PageHeader from '../../components/ui/PageHeader'
 import EmptyState from '../../components/ui/EmptyState'
 import StatusBadge from '../../components/ui/StatusBadge'
 import CloseSessionSheet from '../../components/session/CloseSessionSheet'
-import { PricingPill, SourcePill } from '../../components/ui/Pills'
 import { LoadingBlock, ErrorState } from '../../components/ui/Feedback'
 import { Field, Input, Textarea, Button } from '../../components/ui/Form'
+import Paper from '@mui/material/Paper'
+import Stack from '@mui/material/Stack'
+import Box from '@mui/material/Box'
+import Chip from '@mui/material/Chip'
+import Divider from '@mui/material/Divider'
+import Alert from '@mui/material/Alert'
+import Tooltip from '@mui/material/Tooltip'
+import MuiButton from '@mui/material/Button'
+import MuiTabs from '@mui/material/Tabs'
+import Tab from '@mui/material/Tab'
+import ButtonBase from '@mui/material/ButtonBase'
+import PeopleAltRounded from '@mui/icons-material/PeopleAltRounded'
+import TaskAltRounded from '@mui/icons-material/TaskAltRounded'
+import HourglassEmptyRounded from '@mui/icons-material/HourglassEmptyRounded'
+import PaymentsRounded from '@mui/icons-material/PaymentsRounded'
+import AccessTimeRounded from '@mui/icons-material/AccessTimeRounded'
+import LanguageRounded from '@mui/icons-material/LanguageRounded'
+import PhoneRounded from '@mui/icons-material/PhoneRounded'
+import DescriptionRounded from '@mui/icons-material/DescriptionRounded'
+import FolderSharedRounded from '@mui/icons-material/FolderSharedRounded'
+import WhatsAppIcon from '@mui/icons-material/WhatsApp'
 import {
   formatDateAr, formatDateShort, formatMoney, formatTime, todayISO, toNumber, toDate,
 } from '../../utils/formatters'
@@ -32,6 +52,9 @@ import type { Client, Payment, Reservation, Service, SessionReport } from '../..
 /** Where a patient sits relative to the clock — drives the badge and the sort accent. */
 type Turn = 'now' | 'late' | 'next' | 'done'
 
+/** The left card holds two job lists: the day itself, and the money still owed. */
+type SideTab = 'queue' | 'debts'
+
 export default function ClinicDay() {
   const { userProfile } = useAuth()
   const base = useBasePath()
@@ -39,6 +62,7 @@ export default function ClinicDay() {
   const [date, setDate] = useState(todayISO())
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [sideTab, setSideTab] = useState<SideTab>('queue')
 
   // The whole page is "who is in the chair right now", so the clock has to move.
   const [clock, setClock] = useState(() => new Date().toTimeString().slice(0, 5))
@@ -47,36 +71,24 @@ export default function ClinicDay() {
     return () => clearInterval(id)
   }, [])
 
-  // Needed to price a session: the flat price for services that aren't per-pulse.
+  // Needed to price a session: the listed price the total opens on.
   const services = useLoader(() => getActiveServices(), [])
 
-  // Every booking, not just the day's: unsettled sessions from earlier days are
-  // money the assistant still has to collect, so they have to be on this screen.
-  const day = useLoader(async () => {
-    const reservations = await getReservations()
-    // Publishes the upcoming days to the public site's slot mirror, once per
-    // session — the desk lives on this screen, so it's the surest place to
-    // catch bookings made before the mirror existed.
-    void backfillAvailability(reservations, services.data ?? [])
-    return reservations
-  }, [])
   /**
-   * The doctor prices a session on her own screen while the assistant's is
-   * already open, so this page has to go and look again by itself — otherwise
-   * the money never shows up at the desk until someone refreshes the browser.
+   * The day on screen, live. One open query on one date: the dozen rows are
+   * billed once and then only when one of them actually changes — no timer
+   * re-reading the same rows every thirty seconds, and no waiting thirty
+   * seconds to find out the doctor closed a session.
    */
-  const reloadDay = day.reload
-  useEffect(() => {
-    const id = setInterval(reloadDay, 30_000)
-    const onFocus = () => { if (!document.hidden) reloadDay() }
-    document.addEventListener('visibilitychange', onFocus)
-    window.addEventListener('focus', onFocus)
-    return () => {
-      clearInterval(id)
-      document.removeEventListener('visibilitychange', onFocus)
-      window.removeEventListener('focus', onFocus)
-    }
-  }, [reloadDay])
+  const day = useLiveReservations({ date })
+
+  /**
+   * Sessions that still owe money — asked for by what they owe rather than by
+   * when they happened, so nothing a client owes can quietly age out of the
+   * desk's list. Live too: the assistant takes a payment on one screen and the
+   * debt clears on the other.
+   */
+  const ledger = useLiveReservations({ unsettled: true })
 
   /** The doc holding the rate — a booking made on a type is priced from its service. */
   const serviceFor = (r: Reservation) => {
@@ -86,9 +98,9 @@ export default function ClinicDay() {
   const isToday = date === todayISO()
 
   const queue = useMemo(() => {
-    const list = (day.data ?? []).filter(r => r.date === date && r.status !== 'cancelled')
+    const list = (day.data ?? []).filter(r => r.status !== 'cancelled')
     return list.sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''))
-  }, [day.data, date])
+  }, [day.data])
 
   /**
    * Every session that still owes money — today's first, in the order the
@@ -96,7 +108,7 @@ export default function ClinicDay() {
    * This is the assistant's job list, so it has to include the day on screen.
    */
   const debts = useMemo(() => {
-    return (day.data ?? [])
+    return (ledger.data ?? [])
       .filter(r =>
         r.status !== 'cancelled' &&
         r.status !== 'pending' &&
@@ -108,7 +120,7 @@ export default function ClinicDay() {
         const onDate = (r: Reservation) => (r.date === date ? 0 : 1)
         return onDate(a) - onDate(b) || `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
       })
-  }, [day.data, date])
+  }, [ledger.data, date])
 
   const debtsTotal = useMemo(() => debts.reduce((s, r) => s + dueOf(r), 0), [debts])
 
@@ -157,7 +169,7 @@ export default function ClinicDay() {
     return { client, visits, reports, payments }
   }, [clientId])
 
-  /** Pulses, price, and payment all happen in one sheet — see CloseSessionSheet. */
+  /** Price and payment both happen in one sheet — see CloseSessionSheet. */
   const [closing, setClosing] = useState<Reservation | null>(null)
 
   async function markConfirmed(r: Reservation) {
@@ -166,6 +178,7 @@ export default function ClinicDay() {
       await updateReservation(r.id, { status: 'confirmed', admin_id: userProfile?.uid ?? null })
       toast.success('تم تأكيد الحجز ✅')
       day.reload()
+      ledger.reload()
     } catch (err) {
       toast.error(messageFor(err))
     } finally {
@@ -186,12 +199,14 @@ export default function ClinicDay() {
   }
 
   return (
-    <div>
+    // The screen is the frame: the header and the day's numbers stay put, and
+    // each column scrolls inside itself instead of pushing the page down.
+    <div className="h-full min-h-0 flex flex-col">
       <PageHeader
         title="يوم العيادة"
         subtitle={`${formatDateAr(date)}${isToday ? ` · الساعة ${formatTime(clock)}` : ''}`}
         action={
-          <div className="flex items-center gap-2">
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
             <Input
               type="date"
               value={date}
@@ -200,54 +215,127 @@ export default function ClinicDay() {
               aria-label="اختاري اليوم"
             />
             {!isToday && (
-              <Button variant="outline" onClick={() => { setDate(todayISO()); setPickedId(null) }}>
+              <MuiButton
+                variant="outlined"
+                onClick={() => { setDate(todayISO()); setPickedId(null) }}
+              >
                 النهاردة
-              </Button>
+              </MuiButton>
             )}
-          </div>
+          </Stack>
         }
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        <MiniStat label="حالات اليوم" value={String(counts.total)} icon="👩" />
-        <MiniStat label="خلصت" value={String(counts.done)} icon="✅" color={C.green} />
-        <MiniStat label="فاضل" value={String(counts.left)} icon="⏳" color={C.amber} />
-        <MiniStat label="متبقي على المرضى" value={formatMoney(counts.due)} icon="💰" color={C.gold} />
-      </div>
+      {/* Four numbers on one line rather than four cards — the day's shape at a
+          glance, without eating the height the queue needs. */}
+      <Paper
+        variant="outlined"
+        sx={{
+          mb: 2,
+          px: { xs: 1.5, sm: 2 },
+          py: 1.25,
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(4, 1fr)' },
+          gap: { xs: 1.5, sm: 1 },
+        }}
+      >
+        <Metric icon={<PeopleAltRounded />} label="حالات اليوم" value={String(counts.total)} />
+        <Metric icon={<TaskAltRounded />} label="خلصت" value={String(counts.done)} color={C.green} />
+        <Metric icon={<HourglassEmptyRounded />} label="فاضل" value={String(counts.left)} color={C.amber} />
+        <Metric
+          icon={<PaymentsRounded />}
+          label="متبقي على المرضى"
+          value={formatMoney(counts.due)}
+          color={counts.due > 0 ? C.amber : C.green}
+        />
+      </Paper>
 
-      {/* Only the first load blanks the screen — the 30s refresh stays invisible. */}
+      {/* Only the first load blanks the screen — later updates arrive silently. */}
       {day.loading && !day.data ? (
         <LoadingBlock />
       ) : day.error ? (
         <ErrorState message={day.error} onRetry={day.reload} />
-      ) : queue.length === 0 ? (
+      ) : queue.length === 0 && debts.length === 0 ? (
         <EmptyState
           icon="🗓️"
           title={isToday ? 'مفيش حالات النهاردة' : 'مفيش حالات في اليوم ده'}
           description="الحجوزات اللي هتتسجل هتظهر هنا بالترتيب"
         />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] gap-4 lg:gap-6 items-start">
-          {/* Queue */}
-          <div className="space-y-2.5 order-2 lg:order-1">
-            <h2 className="text-sm font-bold px-1" style={{ color: C.primary }}>
-              الطابور ({queue.length})
-            </h2>
-            {queue.map(r => (
-              <QueueRow
-                key={r.id}
-                r={r}
-                service={serviceFor(r)}
-                turn={turnOf(r)}
-                active={selected?.id === r.id}
-                onSelect={() => setPickedId(r.id)}
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] gap-4">
+          {/* The two job lists, one card, one tab each. The collection list used
+              to hang below the fold at the bottom of the page, where nobody
+              working the desk ever scrolled to find it. */}
+          <Paper
+            variant="outlined"
+            className="order-2 lg:order-1 flex flex-col min-h-0 lg:h-full overflow-hidden"
+          >
+            <MuiTabs
+              value={sideTab}
+              onChange={(_, v: SideTab) => setSideTab(v)}
+              variant="fullWidth"
+              sx={{
+                borderBottom: `1px solid ${C.primarySoft}`,
+                '& .MuiTab-root': { minHeight: 48, fontWeight: 700, fontSize: '0.85rem' },
+              }}
+            >
+              <Tab value="queue" label={<TabLabel text="الطابور" count={queue.length} />} />
+              <Tab
+                value="debts"
+                label={<TabLabel text="تحصيل" count={debts.length} color="warning" />}
               />
-            ))}
-          </div>
+            </MuiTabs>
+
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', p: 1.25 }}>
+              {sideTab === 'queue' ? (
+                queue.length === 0 ? (
+                  <ListNote text="مفيش حالات في اليوم ده" />
+                ) : (
+                  <Stack spacing={1}>
+                    {queue.map(r => (
+                      <QueueRow
+                        key={r.id}
+                        r={r}
+                        service={serviceFor(r)}
+                        turn={turnOf(r)}
+                        active={selected?.id === r.id}
+                        onSelect={() => setPickedId(r.id)}
+                      />
+                    ))}
+                  </Stack>
+                )
+              ) : debts.length === 0 ? (
+                <ListNote text="مفيش فلوس متبقية على حد 🎉" />
+              ) : (
+                <Stack spacing={1}>
+                  {/* What the whole tab adds up to, before the rows themselves */}
+                  <Stack
+                    direction="row"
+                    sx={{ alignItems: 'center', justifyContent: 'space-between', px: 0.5, pb: 0.5 }}
+                  >
+                    <span className="text-xs text-gray-500">إجمالي المتبقي</span>
+                    <span className="text-sm font-bold tabular-nums" style={{ color: C.amber }}>
+                      {formatMoney(debtsTotal)}
+                    </span>
+                  </Stack>
+                  {debts.map(r => (
+                    <DebtRow
+                      key={r.id}
+                      r={r}
+                      sameDay={r.date === date}
+                      base={base}
+                      busy={busy}
+                      onCollect={() => setClosing(r)}
+                    />
+                  ))}
+                </Stack>
+              )}
+            </Box>
+          </Paper>
 
           {/* The file of whoever is selected */}
-          <div className="order-1 lg:order-2 lg:sticky lg:top-6">
-            {selected && (
+          <div className="order-1 lg:order-2 min-h-0 lg:h-full lg:overflow-y-auto">
+            {selected ? (
               <PatientPanel
                 key={selected.id}
                 r={selected}
@@ -266,68 +354,22 @@ export default function ClinicDay() {
                 onClose={() => setClosing(selected)}
                 onReport={canWriteReports ? () => setReportFor(selected) : undefined}
               />
+            ) : (
+              <Paper variant="outlined" sx={{ p: 4 }}>
+                <p className="text-sm text-gray-400 text-center">
+                  اختاري حالة من الطابور علشان يظهر ملفها هنا
+                </p>
+              </Paper>
             )}
           </div>
         </div>
-      )}
-
-      {/* Money still on the street — from any earlier day, not just this one.
-          Taking it is the assistant's job, so only she gets the collect button. */}
-      {debts.length > 0 && (
-        <section className="mt-6">
-          <div className="flex flex-wrap items-center gap-2 mb-3 px-1">
-            <h2 className="text-sm font-bold" style={{ color: C.primary }}>
-              💰 مطلوب تحصيل ({debts.length})
-            </h2>
-            <span className="text-sm font-bold ms-auto" style={{ color: C.amber }}>
-              {formatMoney(debtsTotal)}
-            </span>
-          </div>
-
-          <div className="space-y-2.5">
-            {debts.map(r => (
-              <div
-                key={r.id}
-                className="bg-white rounded-2xl p-3.5 border shadow-sm flex flex-wrap items-center gap-3"
-                style={{ borderColor: '#FDBA74' }}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-sm truncate" style={{ color: C.text }}>
-                    {r.client_name || 'بدون اسم'}
-                  </p>
-                  <p className="text-xs text-gray-500 truncate">
-                    {r.date === date ? formatTime(r.time) : formatDateShort(r.date)}
-                    {' · '}{r.service_name || 'خدمة'}
-                    {r.pulses ? ` · ${r.pulses} نبضة` : ''}
-                  </p>
-                </div>
-
-                <div className="text-end shrink-0">
-                  <p className="text-[11px] text-gray-400">متبقي</p>
-                  <p className="font-bold text-sm" style={{ color: C.amber }}>{formatMoney(dueOf(r))}</p>
-                </div>
-
-                <div className="flex gap-2 shrink-0">
-                  <Button size="sm" onClick={() => setClosing(r)} disabled={busy}>تحصيل</Button>
-                  <Link
-                    to={`${base}/patients/${r.client_id}`}
-                    className="px-4 py-2 rounded-xl text-sm font-medium border bg-white"
-                    style={{ borderColor: C.primarySoft, color: C.primary }}
-                  >
-                    الملف
-                  </Link>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
       )}
 
       <CloseSessionSheet
         reservation={closing}
         service={closing ? serviceFor(closing) : null}
         onClose={() => setClosing(null)}
-        onSaved={() => { setClosing(null); day.reload(); file.reload() }}
+        onSaved={() => { setClosing(null); day.reload(); ledger.reload(); file.reload() }}
       />
 
       {/* Keyed so every opening starts from a blank form instead of the last one */}
@@ -360,55 +402,137 @@ function QueueRow({
   const style = turnStyles[turn]
   const priced = isPriced(r)
   const due = dueOf(r)
+  const fromSite = r.booked_by === 'client'
 
   /** One line telling the assistant what this patient still needs from her. */
   const money = !priced
     ? { text: priceLabel(r, service).text, color: '#9CA3AF' }
     : due > 0
       ? { text: `متبقي ${formatMoney(due)}`, color: C.amber }
-      : { text: '✓ مدفوعة', color: C.green }
+      : { text: 'مدفوعة بالكامل', color: C.green }
+
+  const [hour, period] = formatTime(r.time).split(' ')
 
   return (
-    <button
+    <ButtonBase
       onClick={onSelect}
-      className="w-full text-start bg-white rounded-2xl p-3.5 border shadow-sm flex items-center gap-3 transition-colors hover:bg-[#FDF6F0]/60"
-      style={{
+      sx={{
+        width: '100%',
+        display: 'block',
+        textAlign: 'start',
+        borderRadius: 2,
+        border: '1px solid',
         borderColor: active ? C.primary : style.border,
-        boxShadow: active ? `0 0 0 1px ${C.primary}` : undefined,
-        opacity: turn === 'done' ? 0.75 : 1,
+        backgroundColor: '#fff',
+        // The selected row is the one the panel is showing — it gets a rail on
+        // its own edge rather than a second, heavier border.
+        boxShadow: active ? `inset 3px 0 0 ${C.primary}` : 'none',
+        opacity: turn === 'done' ? 0.7 : 1,
+        p: 1.25,
+        '&:hover': { backgroundColor: C.bg },
       }}
     >
-      <div
-        className="w-14 shrink-0 rounded-xl py-2 text-center"
-        style={{ backgroundColor: turn === 'now' ? C.primary : C.bg, color: turn === 'now' ? '#fff' : C.primary }}
-      >
-        <p className="text-xs font-bold leading-tight">{formatTime(r.time).split(' ')[0]}</p>
-        <p className="text-[10px] opacity-80">{formatTime(r.time).split(' ')[1] ?? ''}</p>
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className="font-semibold text-sm truncate" style={{ color: C.text }}>
-          {r.client_name || 'بدون اسم'}
-        </p>
-        <p className="text-xs text-gray-500 truncate">
-          {r.service_name || 'خدمة'}{r.pulses ? ` · ${r.pulses} نبضة` : ''}
-        </p>
-        <div className="flex items-center gap-2 mt-1">
-          <PricingPill reservation={r} service={service} />
-          <SourcePill bookedBy={r.booked_by} />
-        </div>
-      </div>
-
-      <div className="shrink-0 text-end space-y-1">
-        <span
-          className="inline-block px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap"
-          style={{ backgroundColor: style.bg, color: style.color }}
+      <Stack direction="row" spacing={1.25} sx={{ alignItems: 'center' }}>
+        <Box
+          sx={{
+            width: 52,
+            flexShrink: 0,
+            borderRadius: 1.5,
+            py: 0.75,
+            textAlign: 'center',
+            backgroundColor: turn === 'now' ? C.primary : C.bg,
+            color: turn === 'now' ? '#fff' : C.primary,
+          }}
         >
-          {style.label}
-        </span>
-        <p className="text-[11px]" style={{ color: money.color }}>{money.text}</p>
-      </div>
-    </button>
+          <p className="text-xs font-bold leading-tight tabular-nums">{hour}</p>
+          <p className="text-[10px] opacity-80">{period ?? ''}</p>
+        </Box>
+
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center', minWidth: 0 }}>
+            <p className="font-semibold text-sm truncate" style={{ color: C.text }}>
+              {r.client_name || 'بدون اسم'}
+            </p>
+            {/* Where it came from is one glyph, not a whole pill — a website
+                request behaves differently, but it doesn't need a headline. */}
+            <Tooltip title={fromSite ? 'حجز من الموقع' : 'حجز من العيادة'}>
+              <Box component="span" sx={{ display: 'flex', color: fromSite ? C.blue : '#9CA3AF' }}>
+                {fromSite
+                  ? <LanguageRounded sx={{ fontSize: 14 }} />
+                  : <PhoneRounded sx={{ fontSize: 14 }} />}
+              </Box>
+            </Tooltip>
+          </Stack>
+          <p className="text-xs text-gray-500 truncate">{r.service_name || 'خدمة'}</p>
+          <p className="text-[11px] mt-0.5 tabular-nums truncate" style={{ color: money.color }}>
+            {money.text}
+          </p>
+        </Box>
+
+        <Chip
+          size="small"
+          label={style.label}
+          sx={{
+            flexShrink: 0,
+            backgroundColor: style.bg,
+            color: style.color,
+            fontSize: '0.68rem',
+          }}
+        />
+      </Stack>
+    </ButtonBase>
+  )
+}
+
+// ─── Collection row ──────────────────────────────────────────────────────────
+
+/**
+ * Money still on the street — from any earlier day, not just the one on screen.
+ * Taking it is the assistant's job, so the collect button is the loud part.
+ */
+function DebtRow({
+  r, sameDay, base, busy, onCollect,
+}: {
+  r: Reservation; sameDay: boolean; base: string; busy: boolean; onCollect: () => void
+}) {
+  return (
+    <Paper variant="outlined" sx={{ p: 1.25, borderColor: '#FDBA74' }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <p className="font-semibold text-sm truncate" style={{ color: C.text }}>
+            {r.client_name || 'بدون اسم'}
+          </p>
+          <p className="text-xs text-gray-500 truncate">
+            {sameDay ? formatTime(r.time) : formatDateShort(r.date)}
+            {' · '}{r.service_name || 'خدمة'}
+          </p>
+        </Box>
+
+        <Box sx={{ textAlign: 'end', flexShrink: 0 }}>
+          <p className="text-[11px] text-gray-400">متبقي</p>
+          <p className="font-bold text-sm tabular-nums" style={{ color: C.amber }}>
+            {formatMoney(dueOf(r))}
+          </p>
+        </Box>
+
+        <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
+          <MuiButton size="small" variant="contained" disabled={busy} onClick={onCollect}>
+            تحصيل
+          </MuiButton>
+          <Tooltip title="الملف الكامل">
+            <MuiButton
+              size="small"
+              variant="outlined"
+              component={Link}
+              to={`${base}/patients/${r.client_id}`}
+              sx={{ minWidth: 0, px: 1 }}
+            >
+              <FolderSharedRounded fontSize="small" />
+            </MuiButton>
+          </Tooltip>
+        </Stack>
+      </Stack>
+    </Paper>
   )
 }
 
@@ -449,73 +573,88 @@ function PatientPanel({
   const paidEver = payments.reduce((s, p) => s + toNumber(p.amount), 0)
 
   return (
-    <div className="bg-white rounded-2xl border shadow-sm overflow-hidden" style={{ borderColor: C.primarySoft }}>
+    <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
       {/* Header */}
-      <div className="p-4 sm:p-5 border-b" style={{ borderColor: '#F2C4CE40', backgroundColor: C.bg }}>
-        <div className="flex items-start justify-between gap-3 mb-2">
-          <div className="min-w-0">
+      <Box
+        sx={{
+          p: { xs: 2, sm: 2.5 },
+          backgroundColor: C.bg,
+          borderBottom: `1px solid ${C.primarySoft}`,
+        }}
+      >
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: 'flex-start', mb: 1.25 }}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
             <p className="text-lg font-bold truncate" style={{ color: C.primary }}>
               {r.client_name || client?.name || 'بدون اسم'}
             </p>
-            <p className="text-xs text-gray-500 mt-0.5" dir="ltr">{phone || '—'}</p>
-          </div>
-          <span
-            className="shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap"
-            style={{ backgroundColor: turnStyles[turn].bg, color: turnStyles[turn].color }}
-          >
-            {turnStyles[turn].label}
-          </span>
-        </div>
+            <p className="text-xs text-gray-500 mt-0.5 tabular-nums" dir="ltr">{phone || '—'}</p>
+          </Box>
+          <Chip
+            label={turnStyles[turn].label}
+            sx={{
+              flexShrink: 0,
+              backgroundColor: turnStyles[turn].bg,
+              color: turnStyles[turn].color,
+            }}
+          />
+        </Stack>
 
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
-          <span>🕐 {formatTime(r.time)}</span>
-          <span>💠 {r.service_name || 'خدمة'}</span>
-          {r.pulses ? <span>⚡ {r.pulses} نبضة</span> : null}
-          <span className="tabular-nums">💵 {priceLabel(r, service).text}</span>
-        </div>
-      </div>
+        {/* What today's booking is, in the order the desk reads it */}
+        <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 0.75 }}>
+          <MetaChip icon={<AccessTimeRounded />} label={formatTime(r.time)} />
+          <MetaChip label={r.service_name || 'خدمة'} />
+          <MetaChip icon={<PaymentsRounded />} label={priceLabel(r, service).text} />
+        </Stack>
+      </Box>
 
       {loading ? (
         <LoadingBlock />
       ) : error ? (
         <ErrorState message={error} onRetry={onRetry} />
       ) : (
-        <div className="p-4 sm:p-5 space-y-5">
+        <Box sx={{ p: { xs: 2, sm: 2.5 } }}>
           {/* What the doctor must know before touching the laser */}
           {client?.notes && (
-            <div className="rounded-xl p-3.5 border" style={{ backgroundColor: '#FFF7ED', borderColor: '#FDBA74' }}>
-              <p className="text-xs font-bold mb-1" style={{ color: '#9A3412' }}>⚠️ ملاحظات طبية</p>
-              <p className="text-sm leading-relaxed whitespace-pre-line" style={{ color: '#7C2D12' }}>
-                {client.notes}
-              </p>
-            </div>
+            <Alert severity="warning" sx={{ mb: 2.5, borderRadius: 2 }}>
+              <span className="text-sm leading-relaxed whitespace-pre-line">{client.notes}</span>
+            </Alert>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(4, 1fr)' },
+              gap: 2,
+            }}
+          >
             <Detail label="السن" value={client?.age ? `${client.age} سنة` : '—'} />
             <Detail label="نوع البشرة" value={client?.skin_type || '—'} />
             <Detail label="جلسات سابقة" value={`${previous.length}`} />
             <Detail label="إجمالي دفعت" value={formatMoney(paidEver)} />
-          </div>
+          </Box>
+
+          <Divider sx={{ my: 2.5 }} />
 
           {/* Today's booking */}
-          <section className="rounded-xl p-3.5" style={{ backgroundColor: C.bg }}>
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <p className="text-xs font-bold" style={{ color: C.primary }}>جلسة النهاردة</p>
-              <div className="flex gap-1.5">
+          <SectionTitle
+            title="جلسة النهاردة"
+            trailing={
+              <Stack direction="row" spacing={0.75}>
                 <StatusBadge status={r.status} />
                 {priced && <StatusBadge status={paymentStatus} />}
-              </div>
-            </div>
+              </Stack>
+            }
+          />
+          <Box sx={{ borderRadius: 2, backgroundColor: C.bg, p: 1.75 }}>
             {priced ? (
-              <div className="grid grid-cols-3 gap-3 text-sm">
+              <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 2 }}>
                 <Detail label="الإجمالي" value={formatMoney(total)} />
                 <Detail label="مدفوع" value={formatMoney(paid)} />
                 <Detail label="متبقي" value={due > 0 ? formatMoney(due) : '—'} strong={due > 0} />
-              </div>
+              </Box>
             ) : (
               <p className="text-sm text-gray-500">
-                لسه متسعّرتش — سجّلي النبضات من «إنهاء الجلسة» والإجمالي هيتحسب لوحده.
+                لسه متسعّرتش — اقفلي الجلسة من «إنهاء الجلسة» وسجّلي الإجمالي.
               </p>
             )}
             {r.notes && (
@@ -523,73 +662,81 @@ function PatientPanel({
                 {r.notes}
               </p>
             )}
-          </section>
+          </Box>
+
+          <Divider sx={{ my: 2.5 }} />
 
           {/* Last time she was here */}
-          <section>
-            <p className="text-xs font-bold mb-2" style={{ color: C.primary }}>آخر جلسة</p>
-            {previous.length === 0 ? (
-              <p className="text-sm text-gray-400">أول زيارة ليها 🌸</p>
-            ) : (
-              <div className="rounded-xl border p-3.5 space-y-2" style={{ borderColor: C.primarySoft }}>
-                <p className="text-xs text-gray-500">
-                  {formatDateShort(previous[0].date)} · {previous[0].service_name || 'خدمة'}
-                  {previous[0].pulses ? ` · ${previous[0].pulses} نبضة` : ''}
-                </p>
-                {lastReport ? (
-                  <ReportSummary report={lastReport} />
-                ) : (
-                  <p className="text-sm text-gray-400">مفيش تقرير متسجل على الجلسة اللي فاتت</p>
-                )}
-              </div>
-            )}
-          </section>
+          <SectionTitle title="آخر جلسة" />
+          {previous.length === 0 ? (
+            <p className="text-sm text-gray-400">أول زيارة ليها 🌸</p>
+          ) : (
+            <Paper variant="outlined" sx={{ p: 1.75 }}>
+              <p className="text-xs text-gray-500 mb-1.5">
+                {formatDateShort(previous[0].date)} · {previous[0].service_name || 'خدمة'}
+              </p>
+              {lastReport ? (
+                <ReportSummary report={lastReport} />
+              ) : (
+                <p className="text-sm text-gray-400">مفيش تقرير متسجل على الجلسة اللي فاتت</p>
+              )}
+            </Paper>
+          )}
+
+          <Divider sx={{ my: 2.5 }} />
 
           {/* What she does now — closing the session is the whole job, so it
               gets the full-width primary button and everything else is quiet. */}
-          <div className="space-y-2 pt-1">
-            <Button
-              onClick={onClose}
-              disabled={busy}
-              className="w-full py-3.5! text-base!"
-            >
+          <Stack spacing={1.25}>
+            <MuiButton variant="contained" size="large" fullWidth disabled={busy} onClick={onClose}>
               {!priced
-                ? '✅ إنهاء الجلسة وتسجيل النبضات'
+                ? 'إنهاء الجلسة وتسجيل السعر'
                 : due > 0
-                  ? `💰 تحصيل ${formatMoney(due)}`
-                  : '✏️ تعديل الجلسة'}
-            </Button>
+                  ? `تحصيل ${formatMoney(due)}`
+                  : 'تعديل الجلسة'}
+            </MuiButton>
 
-            <div className="flex flex-wrap gap-2">
+            <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
               {r.status === 'pending' && (
-                <Button variant="success" onClick={onConfirm} disabled={busy}>تأكيد الحجز</Button>
+                <MuiButton variant="contained" color="success" disabled={busy} onClick={onConfirm}>
+                  تأكيد الحجز
+                </MuiButton>
               )}
               {onReport && (
-                <Button variant="outline" onClick={onReport} disabled={busy}>📝 تقرير الجلسة</Button>
+                <MuiButton
+                  variant="outlined"
+                  startIcon={<DescriptionRounded />}
+                  disabled={busy}
+                  onClick={onReport}
+                >
+                  تقرير الجلسة
+                </MuiButton>
               )}
-              <Link
+              <MuiButton
+                variant="outlined"
+                startIcon={<FolderSharedRounded />}
+                component={Link}
                 to={`${base}/patients/${r.client_id}`}
-                className="px-5 py-2.5 rounded-xl text-sm font-medium border bg-white"
-                style={{ borderColor: C.primarySoft, color: C.primary }}
               >
                 الملف الكامل
-              </Link>
+              </MuiButton>
               {phone && (
-                <a
+                <MuiButton
+                  variant="outlined"
+                  color="success"
+                  startIcon={<WhatsAppIcon />}
                   href={buildWhatsAppLink(phone, '')}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-5 py-2.5 rounded-xl text-sm font-medium text-white border border-transparent"
-                  style={{ backgroundColor: '#25D366' }}
                 >
                   واتساب
-                </a>
+                </MuiButton>
               )}
-            </div>
-          </div>
-        </div>
+            </Stack>
+          </Stack>
+        </Box>
       )}
-    </div>
+    </Paper>
   )
 }
 
@@ -604,8 +751,8 @@ function ReportSummary({ report }: { report: SessionReport }) {
   const rows: [string, string | undefined][] = [
     ['التشخيص', report.diagnosis],
     ['العلاج', report.treatment],
-    ['💊 الأدوية', medicines],
-    ['🚫 ممنوعات', report.prohibited_items],
+    ['الأدوية', medicines],
+    ['ممنوعات', report.prohibited_items],
     ['الخطوة الجاية', report.next_steps],
   ]
   const filled = rows.filter(([, v]) => v && String(v).trim())
@@ -695,7 +842,6 @@ function ReportModal({
           <p className="text-xs text-gray-500 rounded-xl p-3" style={{ backgroundColor: C.bg }}>
             {formatDateAr(reservation.date)} · {formatTime(reservation.time)} ·{' '}
             {reservation.service_name || 'خدمة'}
-            {reservation.pulses ? ` · ${reservation.pulses} نبضة` : ''}
           </p>
 
           {fields.map(({ name, label, hint, required }) => (
@@ -738,15 +884,88 @@ function ReportModal({
 
 // ─── Bits ────────────────────────────────────────────────────────────────────
 
-function MiniStat({ label, value, icon, color = C.primary }: {
-  label: string; value: string; icon: string; color?: string
+function Metric({ icon, label, value, color = C.primary }: {
+  icon: ReactNode; label: string; value: string; color?: string
 }) {
   return (
-    <div className="bg-white rounded-2xl p-3.5 border shadow-sm" style={{ borderColor: C.primarySoft }}>
-      <p className="text-xs text-gray-500 mb-1">{icon} {label}</p>
-      <p className="text-lg font-bold wrap-break-word" style={{ color }}>{value}</p>
-    </div>
+    <Stack direction="row" spacing={1.25} sx={{ alignItems: 'center', minWidth: 0 }}>
+      <Box
+        sx={{
+          width: 34,
+          height: 34,
+          flexShrink: 0,
+          borderRadius: 1.5,
+          display: 'grid',
+          placeItems: 'center',
+          backgroundColor: `${color}15`,
+          color,
+          '& svg': { fontSize: 19 },
+        }}
+      >
+        {icon}
+      </Box>
+      <Box sx={{ minWidth: 0 }}>
+        <p className="text-[11px] text-gray-500 leading-tight truncate">{label}</p>
+        <p className="text-base font-bold leading-tight tabular-nums truncate" style={{ color }}>
+          {value}
+        </p>
+      </Box>
+    </Stack>
   )
+}
+
+/** A tab's name with the size of the list behind it. */
+function TabLabel({ text, count, color }: {
+  text: string; count: number; color?: 'warning'
+}) {
+  return (
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center' }}>
+      <span>{text}</span>
+      {count > 0 && (
+        <Chip
+          size="small"
+          color={color}
+          label={count}
+          sx={{ height: 20, minWidth: 20, fontSize: '0.7rem', pointerEvents: 'none' }}
+        />
+      )}
+    </Stack>
+  )
+}
+
+function SectionTitle({ title, trailing }: { title: string; trailing?: ReactNode }) {
+  return (
+    <Stack
+      direction="row"
+      spacing={1}
+      sx={{ alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}
+    >
+      <p className="text-xs font-bold" style={{ color: C.primary }}>{title}</p>
+      {trailing}
+    </Stack>
+  )
+}
+
+/** One fact about today's booking, quiet enough to sit in a row of them. */
+function MetaChip({ icon, label }: { icon?: ReactNode; label: string }) {
+  return (
+    <Chip
+      size="small"
+      variant="outlined"
+      icon={icon as never}
+      label={label}
+      sx={{
+        backgroundColor: '#fff',
+        fontWeight: 600,
+        fontSize: '0.72rem',
+        '& .MuiChip-icon': { fontSize: 15, color: C.primary },
+      }}
+    />
+  )
+}
+
+function ListNote({ text }: { text: string }) {
+  return <p className="text-sm text-gray-400 text-center py-10">{text}</p>
 }
 
 function Detail({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
@@ -754,7 +973,7 @@ function Detail({ label, value, strong }: { label: string; value: string; strong
     <div className="min-w-0">
       <p className="text-xs text-gray-400 mb-0.5">{label}</p>
       <p
-        className={`text-sm wrap-break-word ${strong ? 'font-bold' : 'font-medium'}`}
+        className={`text-sm wrap-break-word tabular-nums ${strong ? 'font-bold' : 'font-medium'}`}
         style={strong ? { color: C.amber } : undefined}
       >
         {value}

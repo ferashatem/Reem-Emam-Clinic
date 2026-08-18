@@ -181,6 +181,38 @@ export const t = {
         },
       ],
     },
+    /* قسم الاستقبال — يقف مكان آراء العملاء إلى أن تتجمّع آراء حقيقية */
+    welcome: {
+      label: "أهلاً بكِ",
+      title: "فتحنا أبوابنا",
+      titleB: "وأنتِ أول من نستقبل",
+      sub: "عيادةٌ حديثة الافتتاح بفريقٍ لم يبدأ اليوم — سنواتٌ من الخبرة في العناية بالبشرة، في مكانٍ صُمِّم لتشعري فيه بالاهتمام من أول خطوة.",
+      cards: [
+        {
+          icon: "🌸",
+          title: "استشارة الزيارة الأولى",
+          text: "نستمع إليكِ ونقرأ بشرتكِ أولاً، فلا نرشّح لكِ جلسةً قبل أن نتأكد أنها المناسبة لكِ.",
+        },
+        {
+          icon: "✨",
+          title: "خطةٌ على مقاسكِ",
+          text: "لا باقات جاهزة للجميع؛ خطتكِ تُكتب بعد معرفة نوع بشرتكِ وهدفكِ والوقت المتاح لكِ.",
+        },
+        {
+          icon: "🛡️",
+          title: "أجهزةٌ معتمدة وأيدٍ متخصصة",
+          text: "كل جلسة تُجرى بمعايير طبية وأجهزة أصلية، مع توثيق كل خطوة في ملفكِ.",
+        },
+      ],
+      stepsTitle: "زيارتكِ الأولى في ثلاث خطوات",
+      steps: [
+        { num: "٠١", title: "احجزي", text: "املئي النموذج بالأسفل أو اتصلي بنا — دقيقة واحدة تكفي." },
+        { num: "٠٢", title: "نتواصل معكِ", text: "نؤكد لكِ الموعد الذي يناسبكِ خلال ٢٤ ساعة." },
+        { num: "٠٣", title: "تعالي وجرّبينا", text: "فحصٌ واستشارة، ثم القرار قراركِ وحدكِ." },
+      ],
+      cta: "احجزي زيارتكِ الأولى",
+      note: "افتتاحٌ جديد — فإن أحببتِ أن تكوني من أوائل ضيفاتنا، فهذا هو الوقت.",
+    },
     booking: {
       label: "تواصلي معنا",
       title: "احجزي جلسة",
@@ -255,7 +287,7 @@ export const t = {
       headline: "Where Your Best ",
       headlineB: "Version Begins",
       sub: "Glow & Go By Reem",
-      // tag: "Complete skincare by a team of certified specialists, using the latest technology and finest global products.",
+      tag: "Complete skincare by a team of certified specialists, using the latest technology and finest global products.",
       cta: "Book Your Session",
       ctaGhost: "Free Consultation",
       scroll: "Scroll to explore",
@@ -403,6 +435,38 @@ export const t = {
           text: '"The place is so elegant and the specialists explain every step. I felt genuinely cared for, not just served. An unforgettable experience."',
         },
       ],
+    },
+    /* The reception section — stands where the reviews will go */
+    welcome: {
+      label: "Welcome",
+      title: "We've opened our doors",
+      titleB: "and you're first through them",
+      sub: "A new clinic, but not a new team — years of skincare behind it, in a space built so you feel looked after from the very first step.",
+      cards: [
+        {
+          icon: "🌸",
+          title: "A first-visit consultation",
+          text: "We listen, and read your skin first. Nothing is recommended until we are sure it is right for you.",
+        },
+        {
+          icon: "✨",
+          title: "A plan built around you",
+          text: "No one-size-fits-all packages. Your plan is written once we know your skin, your goal and your time.",
+        },
+        {
+          icon: "🛡️",
+          title: "Certified devices, trained hands",
+          text: "Every session runs to medical standards on genuine equipment, with each step recorded in your file.",
+        },
+      ],
+      stepsTitle: "Your first visit, in three steps",
+      steps: [
+        { num: "01", title: "Book", text: "Fill in the form below or call us — one minute is enough." },
+        { num: "02", title: "We call you", text: "We confirm a time that suits you within 24 hours." },
+        { num: "03", title: "Come and try us", text: "A consultation and a check, then the decision is yours." },
+      ],
+      cta: "Book your first visit",
+      note: "We have only just opened — if you would like to be among our first guests, now is the moment.",
     },
     booking: {
       label: "Contact Us",

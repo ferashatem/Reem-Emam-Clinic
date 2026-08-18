@@ -63,6 +63,10 @@
 /* ─── BASE ──────────────────────────────────────────────────────────── */
 html {
   scroll-behavior: smooth;
+  /* iOS Safari scrolls the html element, so `overflow-x` on body alone doesn't
+     hold it — a single element poking past the edge lets the whole page drift
+     sideways. `clip` (not `hidden`) leaves the sticky navbar working. */
+  overflow-x: clip;
 }
 
 /* The navbar is fixed, so a bare #anchor jump parks the section title behind
@@ -409,10 +413,15 @@ body.landing-page ::-webkit-scrollbar-thumb {
 .reveal--left {
   transform: translateX(-44px);
 }
-[dir="rtl"] .reveal--right {
+/* The offset has to flip with the writing direction, but these sit *after*
+   `.reveal.show` and match it just as tightly — without `:not(.show)` they win
+   the tie and the element never travels back, leaving the booking card parked
+   44px off its column for the whole visit. Arabic only; LTR is a weaker
+   selector and was never affected. */
+[dir="rtl"] .reveal--right:not(.show) {
   transform: translateX(-44px);
 }
-[dir="rtl"] .reveal--left {
+[dir="rtl"] .reveal--left:not(.show) {
   transform: translateX(44px);
 }
 
@@ -1377,6 +1386,149 @@ body.landing-page ::-webkit-scrollbar-thumb {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   WELCOME — the reception section, standing in for the reviews
+   ═══════════════════════════════════════════════════════════════════ */
+.wel__cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.35rem;
+}
+.wel__card {
+  padding: 2.6rem 1.9rem;
+  text-align: center;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: var(--sh-xs);
+  transition:
+    transform 0.6s var(--ease),
+    box-shadow 0.6s var(--ease),
+    border-color 0.6s;
+}
+.wel__card:hover {
+  transform: translateY(-8px);
+  border-color: rgba(201, 160, 99, 0.45);
+  box-shadow: var(--sh-sm);
+}
+.wel__ico {
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 1.35rem;
+  border-radius: 50%;
+  background: var(--blush);
+  border: 1px solid rgba(201, 160, 99, 0.32);
+  display: grid;
+  place-content: center;
+  font-size: 1.7rem;
+  transition: transform 0.6s var(--ease);
+}
+.wel__card:hover .wel__ico {
+  transform: scale(1.07);
+}
+.wel__card h3 {
+  font-family: var(--serif);
+  font-size: 1.24rem;
+  font-weight: 600;
+  color: var(--wine-700);
+  margin: 0 0 0.65rem;
+}
+.wel__card p {
+  font-size: 0.92rem;
+  line-height: 1.95;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+/* The three steps of a first visit. The rule behind them is decorative, so it
+   is drawn on the list and hidden the moment the steps stack. */
+.wel__steps {
+  margin-top: 3.5rem;
+  padding: 2.8rem 2rem 2.4rem;
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+}
+.wel__steps-title {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--wine-700);
+  text-align: center;
+  margin: 0 0 2.2rem;
+}
+.wel__steps ol {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wel__steps ol::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 22px;
+  inset-inline: 16%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--gold-500) 20%,
+    var(--gold-500) 80%,
+    transparent
+  );
+  opacity: 0.4;
+}
+.wel__steps li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+  text-align: center;
+}
+.wel__num {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+  background: var(--wine-600);
+  color: var(--gold-300);
+  font-family: var(--display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  /* sits over the rule above, so it needs its own ground */
+  box-shadow: 0 0 0 6px var(--white);
+}
+.wel__steps li strong {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--wine-700);
+  margin-bottom: 0.3rem;
+}
+.wel__steps li span:not(.wel__num) {
+  font-size: 0.88rem;
+  line-height: 1.85;
+  color: var(--ink-soft);
+}
+
+.wel__cta {
+  margin-top: 3rem;
+  text-align: center;
+}
+.wel__note {
+  max-width: 520px;
+  margin: 1.15rem auto 0;
+  font-size: 0.88rem;
+  line-height: 1.9;
+  color: var(--ink-faint);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    TESTIMONIALS — twin marquees
    ═══════════════════════════════════════════════════════════════════ */
 .reviews {
@@ -1649,28 +1801,32 @@ body.landing-page ::-webkit-scrollbar-thumb {
    UI the segments come out reversed («ةنس/رهش/موي»). It can't be restyled, so
    while the field is still empty (required + no value = :invalid) we hide it
    and show `.field__ph` in its place. */
+/* Chrome's own picker icon lives in the field's shadow tree, and where it lands
+   is not ours to decide — it follows the date segments, so under an English UI
+   it sits straight on top of the placeholder. So it goes, and the field carries
+   our own icon instead, the same way the select carries its chevron: painted on
+   the field itself, pinned to the inline end, correct in both directions and at
+   every width. `openPicker` in Booking.tsx keeps the field clickable. */
 .field input[type="date"],
 .field input[type="time"] {
   -webkit-appearance: none;
   appearance: none;
   text-align: start;
-  /* anchors the picker icon below, which is a shadow child of this input */
-  position: relative;
+  cursor: pointer;
   /* the room the icon parks in — nothing may run underneath it */
-  padding-inline-end: 2.8rem;
+  padding-inline-end: 2.9rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%237A2038' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.75' y='4.25' width='14.5' height='13' rx='2.5'/%3E%3Cpath d='M2.75 8.25h14.5M6.75 2.75v3M13.25 2.75v3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: 17px 17px;
+  background-position: right 1.05rem center;
 }
-/* Stripping the appearance also drops the icon out of the field's own layout:
-   it lands wherever the (transparent) date segments end, which under an English
-   UI is right on top of the placeholder. Pinning it to the end keeps the two
-   apart at any field width. */
+[dir="rtl"] .field input[type="date"],
+[dir="rtl"] .field input[type="time"] {
+  background-position: left 1.05rem center;
+}
 .field input[type="date"]::-webkit-calendar-picker-indicator,
 .field input[type="time"]::-webkit-calendar-picker-indicator {
-  position: absolute;
-  inset-inline-end: 1.05rem;
-  inset-block: 0;
-  margin-block: auto;
-  opacity: 0.55;
-  cursor: pointer;
+  display: none;
 }
 .field--picker {
   position: relative;
@@ -1687,9 +1843,10 @@ body.landing-page ::-webkit-scrollbar-thumb {
   position: absolute;
   inset-block-end: 0;
   inset-inline-start: 1.05rem;
-  /* stops short of the icon, so a long day-hint truncates instead of sliding
-     under it when the field is squeezed into half a row */
-  inset-inline-end: 2.8rem;
+  /* stops short of the icon — same reserve the input keeps — so a long day-hint
+     truncates instead of sliding under it when the field is squeezed into half
+     a row, or into a phone */
+  inset-inline-end: 2.9rem;
   display: none;
   /* block rather than flex: the ellipsis below needs a real text box */
   height: 52px;
@@ -1915,6 +2072,18 @@ body.landing-page ::-webkit-scrollbar-thumb {
 .foot__contacts a:hover {
   padding-inline-start: 0;
 }
+/* The address is the one row that wraps, so its pin sits with the first line
+   rather than floating in the middle of the block. */
+.foot__contacts .foot__contact--address {
+  align-items: flex-start;
+}
+.foot__contacts .foot__contact--address .ico {
+  margin-block-start: 0.1rem;
+}
+.foot__contacts .foot__contact--address span[dir="rtl"] {
+  line-height: 1.75;
+  text-align: start;
+}
 .foot__contacts .ico {
   width: 34px;
   height: 34px;
@@ -2005,7 +2174,8 @@ body.landing-page ::-webkit-scrollbar-thumb {
    RESPONSIVE
    ═══════════════════════════════════════════════════════════════════ */
 @media (max-width: 1080px) {
-  .cards {
+  .cards,
+  .wel__cards {
     grid-template-columns: repeat(2, 1fr);
   }
 }
@@ -2027,6 +2197,28 @@ body.landing-page ::-webkit-scrollbar-thumb {
   }
   .why {
     padding-block: 6rem;
+  }
+  .wel__cards {
+    grid-template-columns: 1fr;
+  }
+  /* Stacked steps read as a column, so the rule that joined them across the
+     row would now cut straight through them. */
+  .wel__steps ol {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  .wel__steps ol::before {
+    display: none;
+  }
+  .wel__steps li {
+    flex-direction: row;
+    align-items: flex-start;
+    text-align: start;
+    gap: 1rem;
+  }
+  .wel__num {
+    flex: none;
+    box-shadow: none;
   }
   .foot__grid {
     grid-template-columns: 1fr 1fr;
@@ -2063,9 +2255,15 @@ body.landing-page ::-webkit-scrollbar-thumb {
     padding: 0.42rem 0.72rem;
     font-size: 0.78rem;
   }
-  .nav__book {
+  .nav__book,
+  .nav__back {
     padding: 0.62rem 1rem;
     font-size: 0.78rem;
+  }
+  /* Three controls don't fit a phone bar. The logo is already the way home on
+     this width, so the worded button steps aside for the booking CTA. */
+  .nav__back {
+    display: none;
   }
   .hero {
     padding-inline: 1.3rem;
@@ -2146,6 +2344,24 @@ body.landing-page ::-webkit-scrollbar-thumb {
   }
   .book__card {
     border-radius: 18px;
+  }
+  .wel__card {
+    padding: 2.1rem 1.4rem;
+  }
+  .wel__steps {
+    margin-top: 2.6rem;
+    padding: 2rem 1.3rem 1.8rem;
+    border-radius: 18px;
+  }
+  .wel__steps-title {
+    font-size: 1.3rem;
+    margin-bottom: 1.7rem;
+  }
+  .wel__cta {
+    margin-top: 2.4rem;
+  }
+  .wel__cta .btn {
+    width: 100%;
   }
   .book__contacts {
     flex-direction: column;

@@ -74,7 +74,7 @@ export function pricedService(
   all: Service[]
 ): Service | undefined {
   if (!service) return undefined
-  const carriesOwnPrice = toNumber(service.price_per_pulse) > 0 || toNumber(service.price) > 0
+  const carriesOwnPrice = toNumber(service.price) > 0
   if (carriesOwnPrice || !service.parent_id) return service
   return all.find(s => s.id === service.parent_id) ?? service
 }

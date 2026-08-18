@@ -57,6 +57,16 @@ export default function Booking() {
     return () => { live = false }
   }, [date])
 
+  /**
+   * Chrome's own picker button is hidden (it lands on top of the placeholder),
+   * so the field itself is the button. Typing into the segments still works
+   * anywhere this isn't supported.
+   */
+  function openPicker(e: React.MouseEvent<HTMLInputElement>) {
+    const el = e.currentTarget
+    if (typeof el.showPicker === 'function') el.showPicker()
+  }
+
   /** A new day means a fresh set of hours — never carry the old pick over. */
   function pickDate(value: string) {
     setDate(value)
@@ -147,9 +157,7 @@ export default function Booking() {
         service_name: service ? serviceLabel(service, services) : null,
         // What the hour has to keep free for her.
         duration_minutes: minutes,
-        pulses: null,
-        price_per_pulse: null,
-        // Priced after the session, once the pulse count is known. Sending the
+        // Priced after the session. Sending the
         // service's list price here is also refused outright by the security
         // rules — a request from the public site may never carry a total.
         price_at_booking: 0,
@@ -193,7 +201,7 @@ export default function Booking() {
             <a href="tel:+201019191995" className="book__contact">
               <span className="ico"><PhoneIcon /></span>{b.contacts.phone.value}
             </a>
-            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="book__contact">
+            <a href={`mailto:${b.contacts.instagram.value}`} className="book__contact">
               <span className="ico"><AtIcon /></span>{b.contacts.instagram.value}
             </a>
           </div>
@@ -249,6 +257,7 @@ export default function Booking() {
                     <input
                       id="bk-date" name="date" type="date" required min={todayISO()}
                       value={date} onChange={e => pickDate(e.target.value)}
+                      onClick={openPicker}
                     />
                     <span className="field__ph" aria-hidden>{b.datePh}</span>
                   </div>

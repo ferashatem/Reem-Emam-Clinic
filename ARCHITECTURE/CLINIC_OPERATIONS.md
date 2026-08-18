@@ -58,21 +58,22 @@ status='confirmed' + client_id متملّي → الحجز بقى في السج�
 
 | اللحظة | الشاشة | بيتكتب إيه |
 |---|---|---|
-| قبل ما تيجي | `الحجوزات` | مين + إيه + إمتى. **مفيش سعر ولا نبضات.** |
-| وهي على الكرسي | `يوم العيادة` | النبضات + الإجمالي + الدفع — في شيت واحد |
+| قبل ما تيجي | `الحجوزات` | مين + إيه + إمتى. **مفيش سعر.** |
+| وهي على الكرسي | `يوم العيادة` | الإجمالي + الدفع — في شيت واحد |
 | المتابعة | `الدفع` | تحصيل اللي فضل عليه فلوس |
 
-## التسعير بالنبضة
+## التسعير
 
-- السوبر أدمن بيكتب للخدمة `price_per_pulse` أو `price` (سعر ثابت) — واحد منهم على الأقل.
-- **الحجز بيتعمل من غير سعر خالص** (`price_at_booking = 0`, `priced_at = null`) — عدد
-  النبضات مستحيل يتعرف قبل ما الليزر يشتغل، وبالتالي السعر كمان.
-- `price_per_pulse` بيتثبّت على الحجز وقت الحجز (snapshot) — سعر الخدمة ممكن يتغير
-  قبل ما العميلة تيجي، بس الاتفاق اللي اتعمل هو اللي بيتحاسب بيه.
-- بعد الجلسة، الأسيستانت بتفتح **«إنهاء الجلسة»** (`CloseSessionSheet`) وتكتب النبضات →
-  الإجمالي = `pulses × price_per_pulse` بيتحسب لحظياً قدامها.
-- لو الخدمة بسعر ثابت: النبضات بتتسجل للتوثيق الطبي بس، والإجمالي بييجي من `price`.
-- في الحالتين الإجمالي قابل للتعديل يدوي (خصم، عرض، باكدچ).
+الجلسة وحدة واحدة ليها سعر واحد. (التسعير بالنبضة اتشال من السيستم كله —
+`pulses` و`price_per_pulse` مبقاش ليهم وجود، و`scripts/drop-pulses.mjs` بيمسحهم
+من الداتا القديمة.)
+
+- السوبر أدمن بيكتب للخدمة `price` — سعر الجلسة الواحدة. النوع اللي جوه الخدمة
+  ملهوش سعر خاص بيه؛ السعر دايماً على الخدمة الرئيسية.
+- **الحجز بيتعمل من غير سعر خالص** (`price_at_booking = 0`, `priced_at = null`) —
+  السعر اتفاق بيتقفل وقت الجلسة، مش وقت الحجز.
+- بعد الجلسة، اللي على المكتب بيفتح **«إنهاء الجلسة»** (`CloseSessionSheet`):
+  الإجمالي بيفتح على سعر الخدمة، وقابل للتعديل يدوي (خصم، عرض، باكدچ).
 
 `isPriced()` في `src/utils/pricing.ts` هي المصدر الوحيد للحقيقة: الحجز متسعّر لو
 `priced_at != null` أو `price_at_booking > 0` (الشرط التاني عشان الداتا القديمة).
@@ -85,7 +86,7 @@ status='confirmed' + client_id متملّي → الحجز بقى في السج�
 الجلسة تحصل → «إنهاء الجلسة» في /staff/clinic-day
    ↓
 closeSession()  ← ترانزاكشن واحدة
-   ├── بتحدّث الحجز: pulses + price_at_booking + priced_at + status='completed'
+   ├── بتحدّث الحجز: price_at_booking + priced_at + status='completed'
    ├── + paid_amount + payment_status (unpaid | partial | paid)
    └── بتكتب doc في payments (لو دفعت دلوقتي)
    ↓
@@ -133,11 +134,14 @@ closeSession()  ← ترانزاكشن واحدة
 | `closed_by` / `closed_by_name` / `closed_at` | — |
 
 ### حقول اتزادت على الموجود
-- `reservations`: `pulses`, `price_per_pulse`, `priced_at`, `paid_amount`,
-  `payment_status`, `client_name`, `client_phone`
+- `reservations`: `priced_at`, `paid_amount`, `payment_status`, `client_name`,
+  `client_phone`
 - `payments`: `month`
-- `services`: `price_per_pulse`
 - `settings/clinic`: `partners: string[]`
+
+### حقول اتشالت
+`pulses` و`price_per_pulse` من `reservations`، و`price_per_pulse` من `services` —
+الجلسة بقت وحدة واحدة بسعر واحد. `scripts/drop-pulses.mjs` بيمسحهم من الداتا.
 
 ## ملاحظات أمنية
 

@@ -282,7 +282,6 @@ function VisitCard({ visit, index, defaultOpen }: { visit: Visit; index: number;
           </div>
           <p className="text-xs text-gray-500">
             {formatDateAr(r.date)} · {formatTime(r.time)}
-            {r.pulses ? ` · ${r.pulses} نبضة` : ''}
           </p>
         </div>
 
@@ -300,12 +299,8 @@ function VisitCard({ visit, index, defaultOpen }: { visit: Visit; index: number;
             <Block label="ملاحظات الحجز">{r.notes}</Block>
           )}
 
-          {r.pulses != null && (
+          {isPriced(r) && (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-              <Detail label="عدد النبضات" value={`${r.pulses}`} />
-              {toNumber(r.price_per_pulse) > 0 && (
-                <Detail label="سعر النبضة" value={formatMoney(r.price_per_pulse)} />
-              )}
               <Detail label="الإجمالي" value={formatMoney(total)} />
             </div>
           )}

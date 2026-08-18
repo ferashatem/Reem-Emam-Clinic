@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { getReservations, getPayments, getExpenses, getClients, monthOf } from '../../services/firestore'
+import { getReservations, getPayments, getExpenses, getClientCount, monthOf } from '../../services/firestore'
 import { useAuth } from '../../context/AuthContext'
 import { useLoader } from '../../hooks/useLoader'
 import { useBasePath } from '../../hooks/useBasePath'
@@ -19,8 +19,14 @@ export default function Dashboard() {
   const base = useBasePath()
 
   const { data, loading, error, reload } = useLoader(async () => {
+    // Everything on this screen is either today's or this month's, so that is
+    // exactly what gets fetched — it used to read the entire archive to show
+    // one day's queue and one month's revenue.
+    const from = monthKey() + '-01'
     const [reservations, payments, expenses, clients] = await Promise.all([
-      getReservations(), getPayments(), getExpenses(), getClients(),
+      getReservations({ from }), getPayments({ from }), getExpenses(),
+      // A count, not the files themselves — the card only shows the number.
+      getClientCount(),
     ])
     return { reservations, payments, expenses, clients }
   }, [])
@@ -52,7 +58,7 @@ export default function Dashboard() {
       todayList, revenue, spent, net: revenue - spent, collectedToday,
       requests, unpaid,
       dueTotal: unpaid.reduce((s, r) => s + dueOf(r), 0),
-      clients: data?.clients.length ?? 0,
+      clients: data?.clients ?? 0,
     }
   }, [data, today, month])
 
@@ -125,7 +131,7 @@ export default function Dashboard() {
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm truncate">{r.client_name || '—'}</p>
                     <p className="text-xs text-gray-400 truncate">
-                      {r.service_name || '—'}{r.pulses ? ` · ${r.pulses} نبضة` : ''}
+                      {r.service_name || '—'}
                     </p>
                   </div>
                   <div className="text-end shrink-0">
